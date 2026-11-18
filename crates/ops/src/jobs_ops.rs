@@ -26,8 +26,8 @@ use crate::dispatch::{attr_int, attr_text, is_all_printers_uri};
 use crate::gzip::decompress_gzip;
 use crate::ppd::read_file_nofollow_bounded;
 use crate::security::{
-    authorize_op, check_job_limits_and_quotas, check_printer_user_allowed, originating_user,
-    should_redact_job_attr,
+    authorize_op, check_document_k_quota, check_job_limits_and_quotas,
+    enforce_printer_user_allowed, evaluate_op_decision, originating_user, should_redact_job_attr,
 };
 use crate::sub_ops::maybe_add_job_subscription;
 
@@ -510,8 +510,8 @@ fn resolve_and_authorize_dest(
     let printer = {
         let reg = ctx.reg();
         let Some((p, _)) = reg.validate_dest(&uri) else {
-            let policy = ctx.effective_policy_for_dest(None);
             drop(reg);
+            let policy = ctx.effective_policy_for_dest(None);
             if !authorize_op(ctx, outcome, &policy, op_code, None, Some(&uri)) {
                 return None;
             }
@@ -551,15 +551,10 @@ pub fn validate_job(
         );
         return;
     }
-    let user = originating_user(req, ctx);
-    if !check_printer_user_allowed(ctx, &p, &user) {
-        send_status(
-            &mut outcome.response,
-            status::ERROR_NOT_AUTHORIZED,
-            format!("User \"{user}\" is not allowed to print on \"{}\".", p.name),
-        );
+    if !enforce_printer_user_allowed(ctx, outcome, &p, op::VALIDATE_JOB) {
         return;
     }
+    let user = originating_user(req, ctx);
     if let Some(fmt) = req
         .find(tags::OPERATION, "document-format")
         .and_then(attr_text)
@@ -668,8 +663,8 @@ pub fn get_jobs(
             reg.validate_dest(&uri).map(|(p, _)| p)
         };
         let Some(p) = resolved else {
-            let policy = ctx.effective_policy_for_dest(None);
             drop(reg);
+            let policy = ctx.effective_policy_for_dest(None);
             if !authorize_op(ctx, outcome, &policy, op::GET_JOBS, None, Some(&uri)) {
                 return;
             }
@@ -739,24 +734,27 @@ pub fn get_jobs(
 
     let ra = requested_attrs(req).or_else(|| Some(vec!["job-id".into(), "job-uri".into()]));
 
-    let matched: Vec<Job> = {
-        let jobs = ctx.jobs_read();
+    // Resolve class members BEFORE locking `jobs` to prevent nested locks.
+    let class_members: Vec<String> = if all_printers {
+        Vec::new()
+    } else {
+        let target = p_name.as_deref().unwrap_or("");
         let reg = ctx.reg();
+        reg.find(target)
+            .filter(|p| p.is_class())
+            .map(|p| p.members.clone())
+            .unwrap_or_default()
+    };
+
+    let candidates: Vec<Job> = {
+        let jobs = ctx.jobs_read();
         let iter: Vec<&Job> = if all_printers {
             jobs.by_id.values().collect()
         } else {
             let target = p_name.as_deref().unwrap_or("");
-            let is_class = reg.find(target).is_some_and(Printer::is_class);
-            let members: Vec<String> = if is_class {
-                reg.find(target)
-                    .map(|p| p.members.clone())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
             jobs.by_id
                 .values()
-                .filter(|j| j.dest == target || members.iter().any(|m| m == &j.dest))
+                .filter(|j| j.dest == target || class_members.iter().any(|m| m == &j.dest))
                 .collect()
         };
         iter.into_iter()
@@ -771,9 +769,25 @@ pub fn get_jobs(
                 }
                 matches_which_jobs(j, &which)
             })
-            .take(limit)
             .cloned()
             .collect()
+    };
+
+    // In `all_printers` mode, enforce each job's destination `op_policy` so
+    // per-printer policies (e.g. TLS-only / restricted queues) cannot be
+    // bypassed via `Get-Jobs /`.
+    let matched: Vec<Job> = if all_printers {
+        candidates
+            .into_iter()
+            .filter(|j| {
+                let policy = ctx.effective_policy_for_dest(Some(&j.dest));
+                evaluate_op_decision(ctx, &policy, op::GET_JOBS, Some(&j.username))
+                    == authz::AccessDecision::Allowed
+            })
+            .take(limit)
+            .collect()
+    } else {
+        candidates.into_iter().take(limit).collect()
     };
 
     outcome.response.code = status::OK;
@@ -868,15 +882,10 @@ fn submit_document(
         );
         return;
     }
-    let user = originating_user(req, ctx);
-    if !check_printer_user_allowed(ctx, p, &user) {
-        send_status(
-            &mut outcome.response,
-            status::ERROR_NOT_AUTHORIZED,
-            format!("User \"{user}\" is not allowed to print on \"{}\".", p.name),
-        );
+    if !enforce_printer_user_allowed(ctx, outcome, p, req.code) {
         return;
     }
+    let user = originating_user(req, ctx);
     let format = req
         .find(tags::OPERATION, "document-format")
         .and_then(attr_text)
@@ -1051,15 +1060,10 @@ pub fn create_job(
         );
         return;
     }
-    let user = originating_user(req, ctx);
-    if !check_printer_user_allowed(ctx, &p, &user) {
-        send_status(
-            &mut outcome.response,
-            status::ERROR_NOT_AUTHORIZED,
-            format!("User \"{user}\" is not allowed to print on \"{}\".", p.name),
-        );
+    if !enforce_printer_user_allowed(ctx, outcome, &p, op::CREATE_JOB) {
         return;
     }
+    let user = originating_user(req, ctx);
     let ignored = match validate_job_attrs(req, ctx) {
         Ok(u) => u,
         Err((code, msg, unsup)) => {
@@ -1181,11 +1185,12 @@ fn attach_document_to_job(
         );
         return;
     };
-    let job_meta = ctx
-        .jobs_read()
-        .get(id)
-        .map(|j| (j.username.clone(), j.dest.clone(), j.state));
-    let Some((owner, dest, state)) = job_meta else {
+    let job_meta = ctx.jobs_read().get(id).map(|j| {
+        let open_for_docs = j.state == JobState::PendingHeld
+            && j.reasons.iter().any(|r| r == "job-data-insufficient");
+        (j.username.clone(), j.dest.clone(), j.state, open_for_docs)
+    });
+    let Some((owner, dest, state, open_for_docs)) = job_meta else {
         let policy = ctx.effective_policy_for_dest(None);
         if !authorize_op(ctx, outcome, &policy, op_code, None, None) {
             return;
@@ -1208,11 +1213,11 @@ fn attach_document_to_job(
     ) {
         return;
     }
-    if state.is_final() {
+    if state.is_final() || !open_for_docs {
         send_status(
             &mut outcome.response,
             status::ERROR_NOT_POSSIBLE,
-            "Job is already completed.",
+            "Job is not accepting additional documents.",
         );
         return;
     }
@@ -1240,14 +1245,9 @@ fn attach_document_to_job(
                 return;
             }
         }
-        if let Err((code, msg)) =
-            check_job_limits_and_quotas(ctx, p, &owner, document.len() as u64, 1)
-        {
-            // Ignore active-job-count limit since this job already exists; still enforce quotas.
-            if code != status::ERROR_TOO_MANY_JOBS {
-                send_status(&mut outcome.response, code, msg);
-                return;
-            }
+        if let Err((code, msg)) = check_document_k_quota(ctx, p, &owner, document.len() as u64) {
+            send_status(&mut outcome.response, code, msg);
+            return;
         }
     }
 
@@ -1260,6 +1260,16 @@ fn attach_document_to_job(
         );
         return;
     };
+    if job.state != JobState::PendingHeld
+        || !job.reasons.iter().any(|r| r == "job-data-insufficient")
+    {
+        send_status(
+            &mut outcome.response,
+            status::ERROR_NOT_POSSIBLE,
+            "Job is not accepting additional documents.",
+        );
+        return;
+    }
     let num = job.files.iter().map(|f| f.num).max().unwrap_or(0) + 1;
     let data_path = match Job::write_data_file(&ctx.request_root, id, num, &document) {
         Ok(path) => path,
@@ -1303,7 +1313,7 @@ fn attach_document_to_job(
             job.reasons = vec!["hold-new-jobs".into()];
         } else {
             job.state = JobState::Pending;
-            job.reasons = vec!["job-incoming".into()];
+            job.reasons = vec!["none".into()];
         }
     }
     let _ = job.save(&ctx.request_root);
@@ -1464,8 +1474,8 @@ pub fn cancel_job(
         if let Some(j) = active.or(stopped) {
             id = j.id;
         } else {
-            let policy = ctx.effective_policy_for_dest(Some(&dest));
             drop(jr);
+            let policy = ctx.effective_policy_for_dest(Some(&dest));
             if !authorize_op(ctx, outcome, &policy, op::CANCEL_JOB, None, Some(&dest)) {
                 return;
             }
@@ -2139,6 +2149,8 @@ pub fn release_or_resume_job(
     else {
         return;
     };
+    let dest_holds_new = ctx.reg().find(&dest).is_some_and(printer_holds_new_jobs);
+    let is_close = req.code == op::CLOSE_JOB;
     let Some(saved_job) = mutate_job_entry(ctx, id, outcome, |j, outcome| {
         if j.state.is_final() {
             send_status(
@@ -2148,10 +2160,40 @@ pub fn release_or_resume_job(
             );
             return false;
         }
-        j.state = JobState::Pending;
-        j.hold_until = None;
-        j.completed_at = None;
-        j.reasons = vec!["none".into()];
+        if j.state == JobState::Processing {
+            send_status(
+                &mut outcome.response,
+                status::ERROR_NOT_POSSIBLE,
+                "Job is already processing.",
+            );
+            return false;
+        }
+        if j.files.is_empty() {
+            send_status(
+                &mut outcome.response,
+                status::ERROR_NOT_POSSIBLE,
+                "Job has no documents.",
+            );
+            return false;
+        }
+        if is_close {
+            if j.hold_until.is_some() {
+                j.state = JobState::PendingHeld;
+                j.reasons = vec!["job-hold-until-specified".into()];
+            } else if dest_holds_new {
+                j.state = JobState::PendingHeld;
+                j.hold_until = Some("indefinite".into());
+                j.reasons = vec!["hold-new-jobs".into()];
+            } else {
+                j.state = JobState::Pending;
+                j.reasons = vec!["none".into()];
+            }
+        } else {
+            j.state = JobState::Pending;
+            j.hold_until = None;
+            j.completed_at = None;
+            j.reasons = vec!["none".into()];
+        }
         true
     }) else {
         return;
@@ -2161,9 +2203,9 @@ pub fn release_or_resume_job(
         events::Event::JobStateChanged,
         Some(&dest),
         Some(id),
-        Some(JobState::Pending as i32),
+        Some(saved_job.state as i32),
         Some(saved_job.title.clone()),
-        format!("Job {id} transitioned to pending."),
+        format!("Job {id} state updated."),
     );
     ctx.audit(
         op::name(req.code),
@@ -2308,15 +2350,10 @@ pub fn resubmit_or_reprocess_job(
         doc_payloads.push((f.clone(), bytes));
     }
 
-    let user = originating_user(req, ctx);
-    if !check_printer_user_allowed(ctx, &p, &user) {
-        send_status(
-            &mut outcome.response,
-            status::ERROR_NOT_AUTHORIZED,
-            format!("User \"{user}\" is not allowed to print on \"{}\".", p.name),
-        );
+    if !enforce_printer_user_allowed(ctx, outcome, &p, req.code) {
         return;
     }
+    let user = originating_user(req, ctx);
     if req.code == op::RESUBMIT_JOB {
         if let Err((code, msg, unsup)) = validate_job_attrs(req, ctx) {
             for a in unsup {
@@ -2778,12 +2815,12 @@ pub fn cups_authenticate_job(
 }
 
 /// Validate `job-printer-uri` destination for `CUPS-Move-Job` (existence,
-/// accepting state, and per-printer `AllowUser`/`DenyUser`).
+/// destination `op_policy`, accepting state, and per-printer `AllowUser`/`DenyUser`).
 fn resolve_move_target(
     req: &IppMessage,
     outcome: &mut DispatchOutcome,
     ctx: &Ctx<'_>,
-    user: &str,
+    owner: Option<&str>,
 ) -> Option<String> {
     let target_uri = req
         .groups
@@ -2812,6 +2849,17 @@ fn resolve_move_target(
         };
         p.clone()
     };
+    let target_policy = ctx.effective_policy_name(Some(&target_printer)).to_string();
+    if !authorize_op(
+        ctx,
+        outcome,
+        &target_policy,
+        op::CUPS_MOVE_JOB,
+        owner,
+        Some(&target_printer.name),
+    ) {
+        return None;
+    }
     if !target_printer.accepting {
         send_status(
             &mut outcome.response,
@@ -2820,23 +2868,15 @@ fn resolve_move_target(
         );
         return None;
     }
-    if !check_printer_user_allowed(ctx, &target_printer, user) {
-        send_status(
-            &mut outcome.response,
-            status::ERROR_NOT_AUTHORIZED,
-            format!(
-                "User \"{user}\" is not allowed to print on \"{}\".",
-                target_printer.name
-            ),
-        );
+    if !enforce_printer_user_allowed(ctx, outcome, &target_printer, op::CUPS_MOVE_JOB) {
         return None;
     }
     Some(target_printer.name)
 }
 
 /// `CUPS-Move-Job` (0x400d) — moves either a single job (`job-id` / `job-uri`)
-/// or ALL active jobs from a source printer (`printer-uri` without `job-id`,
-/// CUPS `Move-All-Jobs` semantics) to `job-printer-uri`.
+/// or ALL active non-processing jobs from a source printer (`printer-uri`
+/// without `job-id`, CUPS `Move-All-Jobs` semantics) to `job-printer-uri`.
 pub fn cups_move_job(
     req: &IppMessage,
     outcome: &mut DispatchOutcome,
@@ -2846,21 +2886,23 @@ pub fn cups_move_job(
     // Authorize BEFORE validating destination existence/accepting state so
     // anonymous callers cannot probe destination queues.
     if job_id(req, uri_attr).is_some() {
-        let Some((id, old_dest, policy)) =
-            lookup_and_authorize_job(req, outcome, ctx, uri_attr, op::CUPS_MOVE_JOB)
+        let Some((src_job, policy)) =
+            read_authorized_job(req, outcome, ctx, uri_attr, op::CUPS_MOVE_JOB)
         else {
             return;
         };
-        let user = originating_user(req, ctx);
-        let Some(target_dest) = resolve_move_target(req, outcome, ctx, &user) else {
+        let id = src_job.id;
+        let old_dest = src_job.dest;
+        let Some(target_dest) = resolve_move_target(req, outcome, ctx, Some(&src_job.username))
+        else {
             return;
         };
         let Some(saved_job) = mutate_job_entry(ctx, id, outcome, |j, outcome| {
-            if j.state.is_final() {
+            if j.state.is_final() || j.state == JobState::Processing {
                 send_status(
                     &mut outcome.response,
                     status::ERROR_NOT_POSSIBLE,
-                    "Cannot move a completed job.",
+                    "Cannot move a completed or processing job.",
                 );
                 return false;
             }
@@ -2895,7 +2937,7 @@ pub fn cups_move_job(
         return;
     }
 
-    // Move-All-Jobs: move all active jobs from source `printer-uri` to `target_dest`.
+    // Move-All-Jobs: move all movable jobs from source `printer-uri` to `target_dest`.
     let Some(src_uri) = uri_attr.and_then(attr_text) else {
         send_status(
             &mut outcome.response,
@@ -2939,8 +2981,7 @@ pub fn cups_move_job(
     ) {
         return;
     }
-    let user = originating_user(req, ctx);
-    let Some(target_dest) = resolve_move_target(req, outcome, ctx, &user) else {
+    let Some(target_dest) = resolve_move_target(req, outcome, ctx, None) else {
         return;
     };
 
@@ -2948,7 +2989,7 @@ pub fn cups_move_job(
     {
         let mut jobs = ctx.jobs_write();
         for j in jobs.by_id.values_mut() {
-            if j.dest == src_dest && !j.state.is_final() {
+            if j.dest == src_dest && !j.state.is_final() && j.state != JobState::Processing {
                 j.dest.clone_from(&target_dest);
                 let _ = j.save(&ctx.request_root);
                 moved_ids.push(j.id);

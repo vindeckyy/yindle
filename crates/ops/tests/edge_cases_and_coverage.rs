@@ -2673,3 +2673,717 @@ fn jobs_ops_class_get_jobs_resubmit_guards_and_send_document_hold() {
     );
     let _ = bob;
 }
+
+#[test]
+fn concurrency_no_deadlock_with_writer_contending_on_registry_and_jobs() {
+    let h = Harness::new("conc-lock");
+    let mk_class = with_printer_attr(
+        with_printer_uri(
+            ipp_req(op::CUPS_ADD_MODIFY_CLASS),
+            "ipp://localhost:631/classes/pool",
+        ),
+        "member-uris",
+        tags::URI,
+        Value::Uri("ipp://localhost:631/printers/laser1".into()),
+    );
+    assert_eq!(dispatch(&mk_class, &h.admin_ctx()).code, status::OK);
+
+    // Contend writers (`reg_write` + `jobs_write`) against readers hitting all
+    // previously nested/re-entrant paths (missing dests, class Get-Jobs, Cancel-Job id=0).
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let admin = h.admin_ctx();
+            for i in 0..40 {
+                let req = with_printer_attr(
+                    with_printer_uri(
+                        ipp_req(op::SET_PRINTER_ATTRIBUTES),
+                        "ipp://localhost:631/printers/laser1",
+                    ),
+                    "printer-info",
+                    tags::TEXT,
+                    Value::Text(format!("Info {i}").into()),
+                );
+                assert_eq!(dispatch(&req, &admin).code, status::OK);
+            }
+        });
+        s.spawn(|| {
+            let alice = h.user_ctx("alice");
+            let admin = h.admin_ctx();
+            for _ in 0..40 {
+                assert_eq!(
+                    dispatch(
+                        &with_printer_uri(
+                            ipp_req(op::GET_PRINTER_ATTRIBUTES),
+                            "ipp://localhost:631/printers/missing_q",
+                        ),
+                        &alice,
+                    )
+                    .code,
+                    status::ERROR_NOT_FOUND
+                );
+                assert_eq!(
+                    dispatch(
+                        &with_printer_uri(
+                            ipp_req(op::VALIDATE_JOB),
+                            "ipp://localhost:631/printers/missing_q",
+                        ),
+                        &alice,
+                    )
+                    .code,
+                    status::ERROR_NOT_FOUND
+                );
+                assert_eq!(
+                    dispatch(
+                        &with_printer_uri(
+                            ipp_req(op::GET_JOBS),
+                            "ipp://localhost:631/printers/missing_q",
+                        ),
+                        &alice,
+                    )
+                    .code,
+                    status::ERROR_NOT_FOUND
+                );
+                assert_eq!(
+                    dispatch(
+                        &with_printer_uri(
+                            ipp_req(op::GET_JOBS),
+                            "ipp://localhost:631/classes/pool",
+                        ),
+                        &alice,
+                    )
+                    .code,
+                    status::OK
+                );
+                let c0 = with_op_attr(
+                    with_printer_uri(
+                        ipp_req(op::CANCEL_JOB),
+                        "ipp://localhost:631/printers/laser1",
+                    ),
+                    "job-id",
+                    tags::INTEGER,
+                    Value::Integer(0),
+                );
+                assert_eq!(dispatch(&c0, &admin).code, status::ERROR_NOT_POSSIBLE);
+            }
+        });
+    });
+}
+
+#[test]
+fn allow_deny_user_blocks_anonymous_spoofing_and_supports_all_none_clear() {
+    let h = Harness::new("acl-spoof");
+    let admin = h.admin_ctx();
+
+    // 1. Configure `AllowUser alice`:
+    {
+        let mut reg = h.registry.write().unwrap();
+        let p = reg.printers.get_mut("laser1").unwrap();
+        p.users = vec!["alice".into()];
+        p.deny_users = false;
+    }
+
+    // Anonymous caller spoofing `requesting-user-name = alice` MUST be challenged
+    // with `need_auth = true` (`ERROR_NOT_AUTHENTICATED`) across Validate/Print/Create!
+    let mut anon = h.ctx();
+    anon.document = b"spoofed";
+    for code in [op::VALIDATE_JOB, op::PRINT_JOB, op::CREATE_JOB] {
+        let req = with_op_attr(
+            with_printer_uri(ipp_req(code), "ipp://localhost:631/printers/laser1"),
+            "requesting-user-name",
+            tags::NAME,
+            Value::Name("alice".into()),
+        );
+        let out = dispatch_outcome(&req, &anon);
+        assert!(out.need_auth, "op {code:#x} must require auth on AllowUser");
+        assert_eq!(out.auth_type, Some(cups_config::AuthType::Default));
+        assert_eq!(out.response.code, status::ERROR_NOT_AUTHENTICATED);
+    }
+
+    // `CUPS-Get-Printers` MUST hide the `AllowUser alice` queue from anonymous spoofers!
+    let gp_spoof = with_op_attr(
+        ipp_req(op::CUPS_GET_PRINTERS),
+        "requesting-user-name",
+        tags::NAME,
+        Value::Name("alice".into()),
+    );
+    let gp_resp = dispatch(&gp_spoof, &anon);
+    assert_eq!(
+        gp_resp
+            .groups
+            .iter()
+            .filter(|g| g.tag == tags::PRINTER)
+            .count(),
+        0
+    );
+
+    // Authenticated `alice` succeeds; authenticated `bob` gets ERROR_NOT_AUTHORIZED (not need_auth).
+    let val_req = with_printer_uri(
+        ipp_req(op::VALIDATE_JOB),
+        "ipp://localhost:631/printers/laser1",
+    );
+    assert_eq!(dispatch(&val_req, &h.user_ctx("alice")).code, status::OK);
+    let bob_out = dispatch_outcome(&val_req, &h.user_ctx("bob"));
+    assert!(!bob_out.need_auth);
+    assert_eq!(bob_out.response.code, status::ERROR_NOT_AUTHORIZED);
+
+    // 2. `AllowUser @ALL` permits anonymous caller cleanly:
+    h.registry
+        .write()
+        .unwrap()
+        .printers
+        .get_mut("laser1")
+        .unwrap()
+        .users = vec!["@ALL".into()];
+    assert_eq!(dispatch(&val_req, &anon).code, status::OK);
+
+    // 3. `DenyUser mallory`: anonymous caller spoofing `alice` MUST fail closed with `need_auth`!
+    {
+        let mut reg = h.registry.write().unwrap();
+        let p = reg.printers.get_mut("laser1").unwrap();
+        p.users = vec!["mallory".into()];
+        p.deny_users = true;
+    }
+    let spoof_val = with_op_attr(
+        with_printer_uri(
+            ipp_req(op::VALIDATE_JOB),
+            "ipp://localhost:631/printers/laser1",
+        ),
+        "requesting-user-name",
+        tags::NAME,
+        Value::Name("alice".into()),
+    );
+    let deny_anon = dispatch_outcome(&spoof_val, &anon);
+    assert!(deny_anon.need_auth);
+    assert_eq!(deny_anon.response.code, status::ERROR_NOT_AUTHENTICATED);
+    assert_eq!(dispatch(&val_req, &h.user_ctx("alice")).code, status::OK);
+    assert_eq!(
+        dispatch(&val_req, &h.user_ctx("mallory")).code,
+        status::ERROR_NOT_AUTHORIZED
+    );
+
+    // 4. `requesting-user-name-allowed = ["all"]` and `requesting-user-name-denied = ["none"]`
+    // clear `p.users` (matching CUPS)!
+    let clear_allow = with_printer_attr(
+        with_printer_uri(
+            ipp_req(op::CUPS_ADD_MODIFY_PRINTER),
+            "ipp://localhost:631/printers/laser1",
+        ),
+        "requesting-user-name-allowed",
+        tags::NAME,
+        Value::Name("all".into()),
+    );
+    assert_eq!(dispatch(&clear_allow, &admin).code, status::OK);
+    assert_eq!(
+        h.registry.read().unwrap().find("laser1").unwrap().users,
+        Vec::<String>::new()
+    );
+
+    h.registry
+        .write()
+        .unwrap()
+        .printers
+        .get_mut("laser1")
+        .unwrap()
+        .users = vec!["mallory".into()];
+    h.registry
+        .write()
+        .unwrap()
+        .printers
+        .get_mut("laser1")
+        .unwrap()
+        .deny_users = true;
+    let clear_deny = with_printer_attr(
+        with_printer_uri(
+            ipp_req(op::CUPS_ADD_MODIFY_PRINTER),
+            "ipp://localhost:631/printers/laser1",
+        ),
+        "requesting-user-name-denied",
+        tags::NAME,
+        Value::Name("none".into()),
+    );
+    assert_eq!(dispatch(&clear_deny, &admin).code, status::OK);
+    {
+        let reg = h.registry.read().unwrap();
+        let p = reg.find("laser1").unwrap();
+        assert_eq!(p.users, Vec::<String>::new());
+        assert!(!p.deny_users);
+    }
+}
+
+#[test]
+fn ppd_cr_lines_whitespace_qualifiers_foomatic_variants_and_drv_abs_blocked() {
+    // Classic bare-CR PPD line separator smuggling blocked:
+    assert!(validate_ppd_bytes(b"*PPD-Adobe: \"4.3\"\r*cupsFilter: \"*/* 0 /bin/sh\"\n").is_err());
+    assert!(validate_ppd_bytes(b"*PPD-Adobe: \"4.3\"\r*FoomaticRIPCommandLine: \"id\"\n").is_err());
+
+    // Whitespace-qualified directives & Foomatic variants blocked:
+    assert!(
+        validate_ppd_bytes(b"*PPD-Adobe: \"4.3\"\n*cupsFilter foo: \"*/* 0 /bin/sh\"\n").is_err()
+    );
+    assert!(
+        validate_ppd_bytes(b"*PPD-Adobe: \"4.3\"\n*FoomaticRIPCommandLine foo: \"id\"\n").is_err()
+    );
+    assert!(
+        validate_ppd_bytes(b"*PPD-Adobe: \"4.3\"\n*FoomaticRIPCommandLinePDF: \"id\"\n").is_err()
+    );
+    assert!(validate_ppd_bytes(
+        b"*PPD-Adobe: \"4.3\"\n*FoomaticRIPOptionSetting foo=bar: \"id\"\n"
+    )
+    .is_err());
+
+    // `drv:////...` absolute-path escape & empty `drv:///` rejected; valid relative accepted:
+    assert!(validate_driverd_ppd_name("drv:////etc/foo.drv/model").is_err());
+    assert!(validate_driverd_ppd_name("DRV:////etc/passwd").is_err());
+    assert!(validate_driverd_ppd_name("drv:///").is_err());
+    assert!(validate_driverd_ppd_name("drv:///sample.drv/generic.ppd").is_ok());
+}
+
+#[test]
+fn uri_resource_colon_in_path_does_not_trigger_all_printers_ops() {
+    let h = Harness::new("colon-uri");
+    let admin = h.admin_ctx();
+    let mut alice_doc = h.user_ctx("alice");
+    alice_doc.document = b"keep me safe";
+
+    let jid = find_attr_int(
+        &dispatch(
+            &with_printer_uri(
+                ipp_req(op::PRINT_JOB),
+                "ipp://localhost:631/printers/laser1",
+            ),
+            &alice_doc,
+        ),
+        tags::JOB,
+        "job-id",
+    )
+    .unwrap();
+
+    // URIs with `:123/` in the path MUST NOT be misclassified as all-printers URIs!
+    for tricky_uri in [
+        "ipp://localhost:631/printers/hp:123/",
+        "ipp://localhost:631/printers/hp:123/printers",
+        "IPP://localhost:631/printers/hp:999/",
+    ] {
+        for code in [
+            op::CANCEL_JOBS,
+            op::PURGE_JOBS,
+            op::CANCEL_MY_JOBS,
+            op::GET_JOBS,
+        ] {
+            let resp = dispatch(&with_printer_uri(ipp_req(code), tricky_uri), &admin);
+            assert_eq!(
+                resp.code,
+                status::ERROR_NOT_FOUND,
+                "op {code:#x} on {tricky_uri} must NOT match all_printers"
+            );
+        }
+    }
+    // Alice's job on `laser1` must still be Pending and untouched!
+    assert_eq!(
+        h.jobs.read().unwrap().get(jid).unwrap().state,
+        JobState::Pending
+    );
+
+    // IPv6 server root URI `ipp://[::1]:631/` DOES match all_printers:
+    let gj_v6 = dispatch(
+        &with_printer_uri(ipp_req(op::GET_JOBS), "ipp://[::1]:631/"),
+        &admin,
+    );
+    assert_eq!(gj_v6.code, status::OK);
+    assert_eq!(
+        gj_v6.groups.iter().filter(|g| g.tag == tags::JOB).count(),
+        1
+    );
+}
+
+#[test]
+fn review_finding5_collisions_quotas_hold_job_uri_subs_policies_and_states() {
+    let mut h = Harness::new("finding5");
+
+    // Add a TLS-only policy and a second queue `secure_q` using it.
+    let mut tls_pol = Policy {
+        name: "strict-tls".into(),
+        ops: Vec::new(),
+        job_access: vec!["@OWNER".into(), "@SYSTEM".into()],
+        job_values: vec!["default".into()],
+        sub_access: vec!["@OWNER".into(), "@SYSTEM".into()],
+        sub_values: vec!["default".into()],
+    };
+    let mut tls_loc = Location::new("<policy>");
+    tls_loc.order = OrderType::Allow;
+    tls_loc.encryption = cups_config::Encryption::Required;
+    tls_pol.ops.push(PolicyOp {
+        op: ipp_codec::ops::op::ANY_OPERATION,
+        loc: tls_loc,
+    });
+    h.cfg.cupsd.policies.push(tls_pol);
+    {
+        let mut p = Printer::new("secure_q", "ipp://secure.local/ipp");
+        p.op_policy = Some("strict-tls".into());
+        p.shared = true;
+        h.registry.write().unwrap().add(p);
+    }
+
+    let admin = h.admin_ctx();
+    let alice = h.user_ctx("alice");
+
+    // 5a-1: `CUPS-Create-Local-Printer` MUST NOT overwrite existing class or printer or write PPD.
+    let mk_class = with_printer_attr(
+        with_printer_uri(
+            ipp_req(op::CUPS_ADD_MODIFY_CLASS),
+            "ipp://localhost:631/classes/pool",
+        ),
+        "member-uris",
+        tags::URI,
+        Value::Uri("ipp://localhost:631/printers/laser1".into()),
+    );
+    assert_eq!(dispatch(&mk_class, &admin).code, status::OK);
+
+    let mut admin_ppd = h.admin_ctx();
+    let sample_ppd = valid_sample_ppd();
+    admin_ppd.document = sample_ppd.as_bytes();
+    for existing_name in ["pool", "laser1"] {
+        let collide = with_op_attr(
+            ipp_req(op::CUPS_CREATE_LOCAL_PRINTER),
+            "printer-name",
+            tags::NAME,
+            Value::Name(existing_name.into()),
+        );
+        assert_eq!(
+            dispatch(&collide, &admin_ppd).code,
+            status::ERROR_NOT_POSSIBLE
+        );
+    }
+    assert!(h.registry.read().unwrap().find("pool").unwrap().is_class());
+    assert!(!h.server_root.join("ppd/pool.ppd").exists());
+
+    // 5a-2: `CUPS-Add-Modify-Printer` with invalid `printer-state = 99` fails BEFORE writing PPD!
+    let bad_state_ppd = with_printer_attr(
+        with_printer_uri(
+            ipp_req(op::CUPS_ADD_MODIFY_PRINTER),
+            "ipp://localhost:631/printers/fresh_bad",
+        ),
+        "printer-state",
+        tags::ENUM,
+        Value::Enum(99),
+    );
+    assert_eq!(
+        dispatch(&bad_state_ppd, &admin_ppd).code,
+        status::ERROR_ATTRIBUTES_OR_VALUES
+    );
+    assert!(!h.server_root.join("ppd/fresh_bad.ppd").exists());
+
+    // 5b: `Create-Job` + `Send-Document` at `job-page-limit = 1` succeeds (no double-count!),
+    // sets reason `"none"` (not `"job-incoming"`), and rejects extra Send-Document once closed/processing!
+    h.registry
+        .write()
+        .unwrap()
+        .printers
+        .get_mut("laser1")
+        .unwrap()
+        .page_limit = 1;
+    let cj_id = find_attr_int(
+        &dispatch(
+            &with_printer_uri(
+                ipp_req(op::CREATE_JOB),
+                "ipp://localhost:631/printers/laser1",
+            ),
+            &alice,
+        ),
+        tags::JOB,
+        "job-id",
+    )
+    .unwrap();
+
+    // 5e-0: `Close-Job` / `Release-Job` on 0-file Create-Job MUST return ERROR_NOT_POSSIBLE!
+    for code in [op::CLOSE_JOB, op::RELEASE_JOB] {
+        assert_eq!(
+            dispatch(
+                &with_job_uri(ipp_req(code), &format!("ipp://localhost:631/jobs/{cj_id}")),
+                &alice
+            )
+            .code,
+            status::ERROR_NOT_POSSIBLE
+        );
+    }
+
+    let mut alice_doc = h.user_ctx("alice");
+    alice_doc.document = b"doc body";
+    let sd_last = with_op_attr(
+        with_op_attr(
+            with_job_uri(
+                ipp_req(op::SEND_DOCUMENT),
+                &format!("ipp://localhost:631/jobs/{cj_id}"),
+            ),
+            "last-document",
+            tags::BOOLEAN,
+            Value::Boolean(true),
+        ),
+        "requested-attributes",
+        tags::KEYWORD,
+        Value::Keyword("all".into()),
+    );
+    let sd_resp = dispatch(&sd_last, &alice_doc);
+    assert_eq!(sd_resp.code, status::OK);
+    assert_eq!(
+        find_attr_text(&sd_resp, tags::JOB, "job-state-reasons").as_deref(),
+        Some("none")
+    );
+    // Sending another document to the already-closed job MUST return ERROR_NOT_POSSIBLE!
+    assert_eq!(
+        dispatch(&sd_last, &alice_doc).code,
+        status::ERROR_NOT_POSSIBLE
+    );
+    h.registry
+        .write()
+        .unwrap()
+        .printers
+        .get_mut("laser1")
+        .unwrap()
+        .page_limit = 0;
+
+    // 5c: `Release-Held-New-Jobs` releases ONLY `hold-new-jobs`, NOT user-held `job-hold-until`!
+    assert_eq!(
+        dispatch(
+            &with_printer_uri(
+                ipp_req(op::HOLD_NEW_JOBS),
+                "ipp://localhost:631/printers/laser1",
+            ),
+            &admin,
+        )
+        .code,
+        status::OK
+    );
+    let held_by_queue = find_attr_int(
+        &dispatch(
+            &with_printer_uri(
+                ipp_req(op::PRINT_JOB),
+                "ipp://localhost:631/printers/laser1",
+            ),
+            &alice_doc,
+        ),
+        tags::JOB,
+        "job-id",
+    )
+    .unwrap();
+    let held_by_user = find_attr_int(
+        &dispatch(
+            &with_job_attr(
+                with_printer_uri(
+                    ipp_req(op::PRINT_JOB),
+                    "ipp://localhost:631/printers/laser1",
+                ),
+                "job-hold-until",
+                tags::KEYWORD,
+                Value::Keyword("indefinite".into()),
+            ),
+            &alice_doc,
+        ),
+        tags::JOB,
+        "job-id",
+    )
+    .unwrap();
+    assert_eq!(
+        dispatch(
+            &with_printer_uri(
+                ipp_req(op::RELEASE_HELD_NEW_JOBS),
+                "ipp://localhost:631/printers/laser1",
+            ),
+            &admin,
+        )
+        .code,
+        status::OK
+    );
+    assert_eq!(
+        h.jobs.read().unwrap().get(held_by_queue).unwrap().state,
+        JobState::Pending
+    );
+    assert_eq!(
+        h.jobs.read().unwrap().get(held_by_user).unwrap().state,
+        JobState::PendingHeld
+    );
+
+    // 5d: `Create-Job-Subscriptions` using `job-uri` (no `job-id` attr) resolves job accurately!
+    let jsub_uri = with_sub_group(
+        with_job_uri(
+            ipp_req(op::CREATE_JOB_SUBSCRIPTIONS),
+            &format!("ipp://localhost:631/jobs/{cj_id}"),
+        ),
+        vec![Attribute::new(
+            "notify-pull-method",
+            tags::KEYWORD,
+            vec![Value::Keyword("ippget".into())],
+        )],
+    );
+    let jsub_resp = dispatch(&jsub_uri, &alice);
+    assert_eq!(jsub_resp.code, status::OK);
+    let sid = find_attr_int(&jsub_resp, tags::SUBSCRIPTION, "notify-subscription-id").unwrap();
+    let sub_attr_resp = dispatch(
+        &with_op_attr(
+            ipp_req(op::GET_SUBSCRIPTION_ATTRIBUTES),
+            "notify-subscription-id",
+            tags::INTEGER,
+            Value::Integer(sid),
+        ),
+        &alice,
+    );
+    assert_eq!(
+        find_attr_int(&sub_attr_resp, tags::SUBSCRIPTION, "notify-job-id"),
+        Some(cj_id)
+    );
+    assert!(
+        find_attr_text(&sub_attr_resp, tags::SUBSCRIPTION, "notify-printer-uri")
+            .unwrap()
+            .ends_with("/printers/laser1")
+    );
+    // Omitting both `job-id` and `job-uri` on `Create-Job-Subscriptions` -> ERROR_BAD_REQUEST!
+    let jsub_missing = with_sub_group(
+        with_printer_uri(
+            ipp_req(op::CREATE_JOB_SUBSCRIPTIONS),
+            "ipp://localhost:631/printers/laser1",
+        ),
+        vec![Attribute::new(
+            "notify-pull-method",
+            tags::KEYWORD,
+            vec![Value::Keyword("ippget".into())],
+        )],
+    );
+    assert_eq!(
+        dispatch(&jsub_missing, &admin).code,
+        status::ERROR_BAD_REQUEST
+    );
+
+    // 5e-1: `Get-Jobs /` (`all_printers`) enforces per-printer `op_policy` (`strict-tls`)!
+    let mut alice_tls_doc = h.user_ctx("alice");
+    alice_tls_doc.is_encrypted = true;
+    alice_tls_doc.document = b"secret tls job";
+    let sec_jid = find_attr_int(
+        &dispatch(
+            &with_printer_uri(
+                ipp_req(op::PRINT_JOB),
+                "ipps://localhost:631/printers/secure_q",
+            ),
+            &alice_tls_doc,
+        ),
+        tags::JOB,
+        "job-id",
+    )
+    .unwrap();
+
+    let gj_all_plain = dispatch(
+        &with_printer_uri(ipp_req(op::GET_JOBS), "ipp://localhost:631/"),
+        &alice,
+    );
+    let plain_ids: Vec<i32> = gj_all_plain
+        .groups
+        .iter()
+        .filter(|g| g.tag == tags::JOB)
+        .filter_map(|g| g.find("job-id").and_then(Attribute::int))
+        .collect();
+    assert!(!plain_ids.contains(&sec_jid));
+
+    let gj_all_tls = dispatch(
+        &with_printer_uri(ipp_req(op::GET_JOBS), "ipps://localhost:631/"),
+        &alice_tls_doc,
+    );
+    let tls_ids: Vec<i32> = gj_all_tls
+        .groups
+        .iter()
+        .filter(|g| g.tag == tags::JOB)
+        .filter_map(|g| g.find("job-id").and_then(Attribute::int))
+        .collect();
+    assert!(tls_ids.contains(&sec_jid));
+
+    // 5e-2: `CUPS-Move-Job` enforces target `op_policy` (blocks unencrypted move into `secure_q`)
+    // AND refuses to move actively `Processing` jobs (both single and Move-All-Jobs)!
+    let mv_to_tls = with_op_attr(
+        with_job_uri(
+            ipp_req(op::CUPS_MOVE_JOB),
+            &format!("ipp://localhost:631/jobs/{cj_id}"),
+        ),
+        "job-printer-uri",
+        tags::URI,
+        Value::Uri("ipp://localhost:631/printers/secure_q".into()),
+    );
+    let mv_out = dispatch_outcome(&mv_to_tls, &alice);
+    assert!(mv_out.upgrade_required);
+    assert_eq!(mv_out.response.code, status::ERROR_CUPS_UPGRADE_REQUIRED);
+
+    // Mark `cj_id` as `Processing`: single move & Release-Job / Close-Job MUST fail with ERROR_NOT_POSSIBLE!
+    h.jobs.write().unwrap().get_mut(cj_id).unwrap().state = JobState::Processing;
+    let mut admin_tls = h.admin_ctx();
+    admin_tls.is_encrypted = true;
+    assert_eq!(
+        dispatch(&mv_to_tls, &admin_tls).code,
+        status::ERROR_NOT_POSSIBLE
+    );
+    for code in [op::RELEASE_JOB, op::RESUME_JOB, op::CLOSE_JOB] {
+        assert_eq!(
+            dispatch(
+                &with_job_uri(ipp_req(code), &format!("ipp://localhost:631/jobs/{cj_id}")),
+                &alice
+            )
+            .code,
+            status::ERROR_NOT_POSSIBLE
+        );
+    }
+
+    // `Close-Job` on an open `Create-Job` with 1 doc and explicit `job-hold-until=indefinite`
+    // MUST preserve `PendingHeld`!
+    let cj_held_id = find_attr_int(
+        &dispatch(
+            &with_job_attr(
+                with_printer_uri(
+                    ipp_req(op::CREATE_JOB),
+                    "ipp://localhost:631/printers/laser1",
+                ),
+                "job-hold-until",
+                tags::KEYWORD,
+                Value::Keyword("indefinite".into()),
+            ),
+            &alice,
+        ),
+        tags::JOB,
+        "job-id",
+    )
+    .unwrap();
+    let sd_part = with_op_attr(
+        with_job_uri(
+            ipp_req(op::SEND_DOCUMENT),
+            &format!("ipp://localhost:631/jobs/{cj_held_id}"),
+        ),
+        "last-document",
+        tags::BOOLEAN,
+        Value::Boolean(false),
+    );
+    assert_eq!(dispatch(&sd_part, &alice_doc).code, status::OK);
+    let close_resp = dispatch(
+        &with_job_uri(
+            ipp_req(op::CLOSE_JOB),
+            &format!("ipp://localhost:631/jobs/{cj_held_id}"),
+        ),
+        &alice,
+    );
+    assert_eq!(close_resp.code, status::OK);
+    assert_eq!(
+        find_attr_int(&close_resp, tags::JOB, "job-state"),
+        Some(JobState::PendingHeld as i32)
+    );
+
+    // Move-All-Jobs from `laser1` to `secure_q` (over TLS): moves pending/held jobs, leaves Processing `cj_id` on `laser1`!
+    let mv_all = with_op_attr(
+        with_printer_uri(
+            ipp_req(op::CUPS_MOVE_JOB),
+            "ipps://localhost:631/printers/laser1",
+        ),
+        "job-printer-uri",
+        tags::URI,
+        Value::Uri("ipps://localhost:631/printers/secure_q".into()),
+    );
+    assert_eq!(dispatch(&mv_all, &admin_tls).code, status::OK);
+    assert_eq!(h.jobs.read().unwrap().get(cj_id).unwrap().dest, "laser1");
+    assert_eq!(
+        h.jobs.read().unwrap().get(held_by_queue).unwrap().dest,
+        "secure_q"
+    );
+}

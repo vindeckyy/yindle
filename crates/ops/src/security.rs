@@ -307,24 +307,36 @@ fn matches_private_value_list(
     false
 }
 
-/// Check per-printer `AllowUser` / `DenyUser` ACL.
-/// `@SYSTEM` administrators bypass per-queue user restrictions (matching CUPS).
-/// Supports `@group` entries against `ctx.user_groups` when authenticated.
+/// Check per-printer `AllowUser` / `DenyUser` ACL strictly against verified
+/// session identity (`ctx.username`), NEVER untrusted IPP `requesting-user-name`.
+///
+/// - `@SYSTEM` administrators bypass per-queue user restrictions (matching CUPS).
+/// - When `ctx.username` is `None`:
+///   - `AllowUser` permits anonymous access ONLY if `@ALL` or `all` is listed.
+///   - `DenyUser` fails closed (`false`) because an unauthenticated caller
+///     cannot prove they are not in the deny list.
 #[must_use]
-pub fn check_printer_user_allowed(ctx: &Ctx<'_>, printer: &Printer, user: &str) -> bool {
+pub fn check_printer_user_allowed(ctx: &Ctx<'_>, printer: &Printer) -> bool {
     if printer.users.is_empty() || ctx.is_system_admin() {
         return true;
     }
+    let Some(auth_user) = ctx.username.as_deref() else {
+        if printer.deny_users {
+            return false;
+        }
+        return printer
+            .users
+            .iter()
+            .any(|u| u.eq_ignore_ascii_case("@ALL") || u.eq_ignore_ascii_case("all"));
+    };
     let matches_entry = |entry: &str| -> bool {
-        if entry == "@ALL" {
+        if entry.eq_ignore_ascii_case("@ALL") || entry.eq_ignore_ascii_case("all") {
             return true;
         }
         if let Some(group) = entry.strip_prefix('@') {
-            return ctx.username.is_some()
-                && !group.is_empty()
-                && ctx.user_groups.iter().any(|g| g == group);
+            return !group.is_empty() && ctx.user_groups.iter().any(|g| g == group);
         }
-        entry.eq_ignore_ascii_case(user)
+        entry.eq_ignore_ascii_case(auth_user)
     };
     let listed = printer.users.iter().any(|u| matches_entry(u));
     if printer.deny_users {
@@ -332,6 +344,53 @@ pub fn check_printer_user_allowed(ctx: &Ctx<'_>, printer: &Printer, user: &str) 
     } else {
         listed
     }
+}
+
+/// Enforce per-printer `AllowUser` / `DenyUser` ACL for job operations.
+///
+/// Signals HTTP `401` (`need_auth = true`, `ERROR_NOT_AUTHENTICATED`) when an
+/// unauthenticated caller is rejected by a queue ACL, and `ERROR_NOT_AUTHORIZED`
+/// when an authenticated caller is denied.
+pub fn enforce_printer_user_allowed(
+    ctx: &Ctx<'_>,
+    outcome: &mut DispatchOutcome,
+    printer: &Printer,
+    op_code: u16,
+) -> bool {
+    if check_printer_user_allowed(ctx, printer) {
+        return true;
+    }
+    if let Some(auth_user) = ctx.username.as_deref() {
+        send_status(
+            &mut outcome.response,
+            status::ERROR_NOT_AUTHORIZED,
+            format!(
+                "User \"{auth_user}\" is not allowed to print on \"{}\".",
+                printer.name
+            ),
+        );
+        ctx.audit(
+            op::name(op_code),
+            Some(&printer.name),
+            "denied",
+            format!("user {auth_user} denied by printer ACL"),
+        );
+    } else {
+        outcome.need_auth = true;
+        outcome.auth_type = Some(cups_config::AuthType::Default);
+        send_status(
+            &mut outcome.response,
+            status::ERROR_NOT_AUTHENTICATED,
+            format!("Authentication required to access \"{}\".", printer.name),
+        );
+        ctx.audit(
+            op::name(op_code),
+            Some(&printer.name),
+            "auth-required",
+            "printer user ACL requires authentication",
+        );
+    }
+    false
 }
 
 /// Determine job/subscription originating user metadata (NOT for authorization!).
@@ -456,6 +515,45 @@ pub fn check_job_limits_and_quotas(
         }
     }
 
+    Ok(())
+}
+
+/// Enforce ONLY incremental `job-k-limit` for `Send-Document` / `Send-URI` on
+/// an already-created job so pages are not double-counted against `job-page-limit`.
+pub fn check_document_k_quota(
+    ctx: &Ctx<'_>,
+    printer: &Printer,
+    user: &str,
+    incoming_bytes: u64,
+) -> Result<(), (u16, String)> {
+    if printer.k_limit <= 0 {
+        return Ok(());
+    }
+    let jobs = ctx.jobs_read();
+    let now_s = printer::now();
+    let window_start = if printer.quota_period > 0 {
+        now_s.saturating_sub(i64::from(printer.quota_period))
+    } else {
+        i64::MIN
+    };
+    let mut user_k_used: u64 = 0;
+    for j in jobs.by_id.values() {
+        if j.dest == printer.name
+            && j.username.eq_ignore_ascii_case(user)
+            && j.created_at >= window_start
+        {
+            let bytes: u64 = j.files.iter().map(|f| f.size).sum();
+            user_k_used = user_k_used.saturating_add(bytes.div_ceil(1024));
+        }
+    }
+    let limit = u64::try_from(printer.k_limit).unwrap_or(u64::MAX);
+    let inc_k = incoming_bytes.div_ceil(1024);
+    if user_k_used.saturating_add(inc_k) > limit {
+        return Err((
+            status::ERROR_NOT_POSSIBLE,
+            "Quota limit reached (job-k-limit exceeded).".into(),
+        ));
+    }
     Ok(())
 }
 

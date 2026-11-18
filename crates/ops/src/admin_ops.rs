@@ -205,8 +205,17 @@ fn apply_common_dest_attrs(p: &mut Printer, req: &IppMessage) -> Result<(), (u16
                             _ => None,
                         })
                         .collect();
-                    p.users = users;
-                    p.deny_users = false;
+                    if users.is_empty()
+                        || (users.len() == 1
+                            && (users[0].eq_ignore_ascii_case("all")
+                                || users[0].eq_ignore_ascii_case("@all")))
+                    {
+                        p.users.clear();
+                        p.deny_users = false;
+                    } else {
+                        p.users = users;
+                        p.deny_users = false;
+                    }
                 }
                 "requesting-user-name-denied" => {
                     let users: Vec<String> = a
@@ -219,8 +228,15 @@ fn apply_common_dest_attrs(p: &mut Printer, req: &IppMessage) -> Result<(), (u16
                             _ => None,
                         })
                         .collect();
-                    p.users = users;
-                    p.deny_users = true;
+                    if users.is_empty()
+                        || (users.len() == 1 && users[0].eq_ignore_ascii_case("none"))
+                    {
+                        p.users.clear();
+                        p.deny_users = false;
+                    } else {
+                        p.users = users;
+                        p.deny_users = true;
+                    }
                 }
                 "job-sheets-default" => {
                     let sheets: Vec<String> = a
@@ -340,7 +356,8 @@ pub fn add_modify_printer(
         }
     }
 
-    // Reject class name collisions before writing any PPD file to disk.
+    // Reject class name collisions and validate common attributes BEFORE
+    // writing any PPD file to disk.
     if ctx.reg().printers.get(&name).is_some_and(Printer::is_class) {
         send_status(
             &mut outcome.response,
@@ -348,6 +365,13 @@ pub fn add_modify_printer(
             "A class with that name already exists.",
         );
         return;
+    }
+    {
+        let mut scratch = Printer::new(name.clone(), String::new());
+        if let Err((code, msg)) = apply_common_dest_attrs(&mut scratch, req) {
+            send_status(&mut outcome.response, code, msg);
+            return;
+        }
     }
 
     // Validate/install PPD before mutating the registry so invalid uploads fail cleanly.
@@ -476,8 +500,13 @@ pub fn create_local_printer(req: &IppMessage, outcome: &mut DispatchOutcome, ctx
         }
     }
 
-    if let Err((code, msg)) = install_and_patch_ppd(req, ctx, &name, ppd_name.as_deref()) {
-        send_status(&mut outcome.response, code, msg);
+    // Reject colliding existing printer or class BEFORE writing any PPD file.
+    if ctx.reg().printers.contains_key(&name) {
+        send_status(
+            &mut outcome.response,
+            status::ERROR_NOT_POSSIBLE,
+            "A printer or class with that name already exists.",
+        );
         return;
     }
 
@@ -486,8 +515,8 @@ pub fn create_local_printer(req: &IppMessage, outcome: &mut DispatchOutcome, ctx
     p.accepting = true;
     p.state = pstate::IDLE;
 
-    if let Some(ppd) = ppd_name {
-        p.options.push(("ppd-name".into(), ppd));
+    if let Some(ref ppd) = ppd_name {
+        p.options.push(("ppd-name".into(), ppd.clone()));
     }
     if let Some(devid) = attr("printer-device-id")
         .and_then(attr_text)
@@ -505,8 +534,24 @@ pub fn create_local_printer(req: &IppMessage, outcome: &mut DispatchOutcome, ctx
         return;
     }
 
+    if let Err((code, msg)) = install_and_patch_ppd(req, ctx, &name, ppd_name.as_deref()) {
+        send_status(&mut outcome.response, code, msg);
+        return;
+    }
+
     let saved_p = p.clone();
-    ctx.reg_write().add(p);
+    {
+        let mut reg = ctx.reg_write();
+        if reg.printers.contains_key(&name) {
+            send_status(
+                &mut outcome.response,
+                status::ERROR_NOT_POSSIBLE,
+                "A printer or class with that name already exists.",
+            );
+            return;
+        }
+        reg.add(p);
+    }
     ctx.save_printers();
     ctx.event(
         events::Event::PrinterAdded,
@@ -972,7 +1017,8 @@ pub fn release_held_new_jobs(
     let is_class = p.is_class();
     drop(reg);
 
-    // Release jobs that were held for hold-new-jobs (and already have documents).
+    // Release ONLY jobs held due to `hold-new-jobs` (never jobs explicitly held
+    // by users via `Hold-Job` or `job-hold-until`).
     let mut released_ids = Vec::new();
     {
         let mut jobs = ctx.jobs_write();
@@ -980,9 +1026,7 @@ pub fn release_held_new_jobs(
             if j.dest == name
                 && j.state == JobState::PendingHeld
                 && !j.files.is_empty()
-                && j.reasons
-                    .iter()
-                    .any(|r| r == "job-hold-until-specified" || r == "hold-new-jobs")
+                && j.reasons.iter().any(|r| r == "hold-new-jobs")
             {
                 j.state = JobState::Pending;
                 j.hold_until = None;

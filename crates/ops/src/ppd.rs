@@ -97,25 +97,28 @@ pub fn validate_ppd_bytes(data: &[u8]) -> Result<(), String> {
     }
     let text = String::from_utf8_lossy(data);
     let trimmed = text.trim_start_matches('\u{feff}');
-    let first_non_empty = trimmed.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    // Split on BOTH `\r` and `\n` so classic CR-only PPD 4.3 lines cannot hide directives.
+    let first_non_empty = trimmed
+        .split(['\r', '\n'])
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
     if !first_non_empty.starts_with("*PPD-Adobe:") {
         return Err("Missing \"*PPD-Adobe:\" header.".into());
     }
 
-    for (idx, raw_line) in trimmed.lines().enumerate() {
+    for (idx, raw_line) in trimmed.split(['\r', '\n']).enumerate() {
         let line = raw_line.trim();
         let Some((lhs, _)) = line.split_once(':') else {
             continue;
         };
         let kw = lhs
-            .split('/')
+            .split(|c: char| c == '/' || c.is_ascii_whitespace())
             .next()
             .unwrap_or(lhs)
-            .trim()
             .to_ascii_lowercase();
-        if kw == "*foomaticripcommandline" {
+        if kw.starts_with("*foomaticripcommandline") || kw == "*foomaticripoptionsetting" {
             return Err(format!(
-                "Disallowed *FoomaticRIPCommandLine directive on line {}.",
+                "Disallowed Foomatic execution directive on line {}.",
                 idx + 1
             ));
         }
@@ -367,13 +370,16 @@ pub fn validate_driverd_ppd_name(name: &str) -> Result<(), String> {
     if name.starts_with('/') || name.contains('\\') || name.bytes().any(|b| b < 0x20 || b == 0x7f) {
         return Err("Invalid characters in ppd-name.".into());
     }
-    // Check path segments for `..` traversal (works for both `drv:///...` and `lsb/...`).
-    let stripped = name
-        .strip_prefix("drv:///")
-        .or_else(|| name.strip_prefix("drv://"))
+    // Strip `drv:///` / `drv://` case-insensitively and reject empty, absolute
+    // (e.g. `drv:////etc/...`), or `..` traversal paths.
+    let stripped = strip_prefix_ignore_ascii_case(name, "drv:///")
+        .or_else(|| strip_prefix_ignore_ascii_case(name, "drv://"))
         .unwrap_or(name);
-    if stripped.split('/').any(|seg| seg == "..") {
-        return Err("Path traversal in ppd-name.".into());
+    if stripped.is_empty()
+        || stripped.starts_with('/')
+        || stripped.split('/').any(|seg| seg == "..")
+    {
+        return Err("Path traversal or absolute path in ppd-name.".into());
     }
     Ok(())
 }

@@ -206,34 +206,45 @@ pub fn create_subscription(
 ) {
     let job_sub = req.code == op::CREATE_JOB_SUBSCRIPTIONS;
     let uri_opt = uri_attr.and_then(attr_text);
-    let printer = uri_opt
-        .as_deref()
-        .filter(|u| !is_all_printers_uri(u))
-        .and_then(dest_name);
+    let printer = if job_sub {
+        None
+    } else {
+        uri_opt
+            .as_deref()
+            .filter(|u| !is_all_printers_uri(u))
+            .and_then(dest_name)
+    };
 
     let (job_id, job_owner, policy_dest) = if job_sub {
-        let jid = int_attr(req, "job-id").map(|j| j as i32);
-        if let Some(id) = jid {
-            let job_meta = ctx
-                .jobs_read()
-                .get(id)
-                .map(|j| (j.username.clone(), j.dest.clone()));
-            let Some((owner, dest)) = job_meta else {
-                let policy = ctx.effective_policy_for_dest(None);
-                if !authorize_op(ctx, outcome, &policy, req.code, None, None) {
-                    return;
-                }
-                send_status(
-                    &mut outcome.response,
-                    status::ERROR_NOT_FOUND,
-                    "Job not found.",
-                );
+        let Some(id) = crate::jobs_ops::job_id(req, uri_attr) else {
+            let policy = ctx.effective_policy_for_dest(None);
+            if !authorize_op(ctx, outcome, &policy, req.code, None, None) {
                 return;
-            };
-            (Some(id), Some(owner), Some(dest))
-        } else {
-            (None, None, printer.clone())
-        }
+            }
+            send_status(
+                &mut outcome.response,
+                status::ERROR_BAD_REQUEST,
+                "Missing job-id or job-uri.",
+            );
+            return;
+        };
+        let job_meta = ctx
+            .jobs_read()
+            .get(id)
+            .map(|j| (j.username.clone(), j.dest.clone()));
+        let Some((owner, dest)) = job_meta else {
+            let policy = ctx.effective_policy_for_dest(None);
+            if !authorize_op(ctx, outcome, &policy, req.code, None, None) {
+                return;
+            }
+            send_status(
+                &mut outcome.response,
+                status::ERROR_NOT_FOUND,
+                "Job not found.",
+            );
+            return;
+        };
+        (Some(id), Some(owner), Some(dest))
     } else {
         (None, None, printer.clone())
     };

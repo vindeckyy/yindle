@@ -14,7 +14,7 @@ use crate::admin_ops;
 use crate::common::{copy_printer_attrs, new_response, requested_attrs, send_status};
 use crate::ctx::{Ctx, DispatchOutcome};
 use crate::jobs_ops;
-use crate::security::{authorize_op, check_printer_user_allowed, originating_user};
+use crate::security::{authorize_op, check_printer_user_allowed};
 use crate::sub_ops;
 
 /// `cupsdProcessIPPRequest()` — validate, authorize, and execute one IPP
@@ -304,8 +304,8 @@ fn resolve_printer_for_read(
     let printer = {
         let reg = ctx.reg();
         let Some((p, _)) = reg.validate_dest(&uri) else {
-            let policy = ctx.effective_policy_for_dest(None);
             drop(reg);
+            let policy = ctx.effective_policy_for_dest(None);
             if !authorize_op(ctx, outcome, &policy, op_code, None, Some(&uri)) {
                 return None;
             }
@@ -428,7 +428,6 @@ fn get_printers(req: &IppMessage, outcome: &mut DispatchOutcome, ctx: &Ctx<'_>, 
     let loc_filter = req
         .find(tags::OPERATION, "printer-location")
         .and_then(attr_text);
-    let effective_user = originating_user(req, ctx);
     let ra = requested_attrs(req);
 
     let matching: Vec<Printer> = {
@@ -478,7 +477,7 @@ fn get_printers(req: &IppMessage, outcome: &mut DispatchOutcome, ctx: &Ctx<'_>, 
                     _ => continue,
                 }
             }
-            if !check_printer_user_allowed(ctx, p, &effective_user) {
+            if !check_printer_user_allowed(ctx, p) {
                 continue;
             }
             out.push(p.clone());
@@ -529,25 +528,28 @@ fn valid_lang(s: &str) -> bool {
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 
-/// Resource path inside an `ipp[s]://` URI — after `host[:port]`.
+/// Resource path inside an `ipp[s]://` or `http[s]://` URI — after authority.
+///
+/// Authority cannot contain `'/'`, so splitting at the first `'/'` after the
+/// scheme accurately handles IPv4, IPv6 (`[::1]:631`), bare paths, and colons
+/// inside path segments (e.g. `/printers/hp:123/`).
 pub fn uri_resource(uri: &str) -> &str {
-    let rest = uri
-        .strip_prefix("ipp://")
-        .or_else(|| uri.strip_prefix("ipps://"))
-        .or_else(|| uri.strip_prefix("http://"))
-        .or_else(|| uri.strip_prefix("https://"))
-        .map_or(uri, |r| r.split('?').next().unwrap_or(r));
-    if let Some(colon) = rest.rfind(':') {
-        if let Some(slash) = rest[colon..].find('/') {
-            let port_part = &rest[colon + 1..colon + slash];
-            if !port_part.is_empty() && port_part.bytes().all(|b| b.is_ascii_digit()) {
-                return &rest[colon + slash..];
-            }
-        }
-    }
-    match rest.find('/') {
-        Some(i) => &rest[i..],
-        None => "/",
+    let no_query = uri.split('?').next().unwrap_or(uri);
+    let after_scheme = ["ipps://", "ipp://", "https://", "http://"]
+        .into_iter()
+        .find_map(|scheme| {
+            let n = scheme.len();
+            no_query
+                .get(..n)
+                .filter(|head| head.eq_ignore_ascii_case(scheme))
+                .and_then(|_| no_query.get(n..))
+        });
+    match after_scheme {
+        Some(rest) => match rest.find('/') {
+            Some(i) => &rest[i..],
+            None => "/",
+        },
+        None => no_query,
     }
 }
 

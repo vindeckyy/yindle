@@ -275,11 +275,14 @@ impl Ctx<'_> {
     }
 
     /// Resolve effective policy name for a named destination via registry lookup.
+    /// Short-circuits without locking `registry` when `dest` is `None`.
     #[must_use]
     pub fn effective_policy_for_dest(&self, dest: Option<&str>) -> String {
+        let Some(d) = dest else {
+            return self.effective_policy_name(None).to_string();
+        };
         let reg = self.reg();
-        let printer = dest.and_then(|d| reg.find(d));
-        self.effective_policy_name(printer).to_string()
+        self.effective_policy_name(reg.find(d)).to_string()
     }
 
     /// True if the authenticated caller belongs to any configured `SystemGroup`.
