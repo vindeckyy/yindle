@@ -674,6 +674,20 @@ pub fn open_char_device_with_prefixes(
         ));
     }
 
+    // Pre-open check prevents hanging on a FIFO under `/dev/` (e.g. `/dev/shm`)
+    // or opening a non-char special file before rejecting it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        let pre_meta = std::fs::symlink_metadata(&canonical)?;
+        if !pre_meta.file_type().is_char_device() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{} is not a character device", canonical.display()),
+            ));
+        }
+    }
+
     let mut opts = OpenOptions::new();
     opts.read(read).write(write);
     #[cfg(unix)]
@@ -684,6 +698,7 @@ pub fn open_char_device_with_prefixes(
     }
     let file = opts.open(&canonical)?;
 
+    // Post-open `fstat` check closes any TOCTOU window after `symlink_metadata`.
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileTypeExt;
@@ -1113,7 +1128,7 @@ mod tests {
         let ok = open_char_device_with_prefixes("/dev/null", &["/dev/null"], true, true, false);
         assert!(ok.is_ok());
 
-        // /dev/shm (directory) or file inside /dev/shm if writable is not a char device.
+        // /dev/shm regular file AND FIFO must be rejected before open (no FIFO hang).
         if Path::new("/dev/shm").is_dir() {
             let shm_file =
                 Path::new("/dev/shm").join(format!("pw-bc-nonchr-{}", std::process::id()));
@@ -1122,6 +1137,18 @@ mod tests {
                     open_char_device(&shm_file.to_string_lossy(), true, true, false).unwrap_err();
                 assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
                 let _ = std::fs::remove_file(&shm_file);
+            }
+            let shm_fifo = Path::new("/dev/shm").join(format!("pw-bc-fifo-{}", std::process::id()));
+            let _ = std::fs::remove_file(&shm_fifo);
+            if std::process::Command::new("mkfifo")
+                .arg(&shm_fifo)
+                .status()
+                .is_ok_and(|s| s.success())
+            {
+                let err =
+                    open_char_device(&shm_fifo.to_string_lossy(), false, true, false).unwrap_err();
+                assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+                let _ = std::fs::remove_file(&shm_fifo);
             }
         }
         let _ = std::fs::remove_dir_all(&dir);

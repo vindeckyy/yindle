@@ -22,6 +22,7 @@ const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TRAILER_LINES: usize = 64;
 const STREAM_BUF_SIZE: usize = 16 * 1024;
+const MAX_PAGE_EVENTS_PER_UPDATE: u32 = 64;
 
 /// Runtime configuration (injectable for deterministic tests).
 struct Config {
@@ -908,6 +909,26 @@ fn build_get_job_attributes(target: &Target, job_id: i32, user: &str) -> IppMess
     msg
 }
 
+/// Emit bounded `PAGE:` updates for completed impressions so a malicious or
+/// buggy remote IPP server returning `i32::MAX` cannot flood stderr or hang.
+fn emit_page_updates(last_pages: &mut u32, completed: u32) -> u32 {
+    if completed <= *last_pages {
+        return 0;
+    }
+    let delta = completed - *last_pages;
+    if delta <= MAX_PAGE_EVENTS_PER_UPDATE {
+        for p in (*last_pages + 1)..=completed {
+            bc::page(p, 1);
+        }
+        *last_pages = completed;
+        delta
+    } else {
+        bc::page(completed, 1);
+        *last_pages = completed;
+        1
+    }
+}
+
 /// Poll `Get-Job-Attributes` until the remote job completes, cancels, aborts,
 /// or is permanently held.
 fn poll_job(
@@ -973,12 +994,7 @@ fn poll_job(
             .or_else(|| find_job_int(&resp, "job-media-sheets-completed"))
             .and_then(|n| u32::try_from(n).ok())
             .unwrap_or(0);
-        if completed > last_pages {
-            for p in (last_pages + 1)..=completed {
-                bc::page(p, 1);
-            }
-            last_pages = completed;
-        }
+        let _ = emit_page_updates(&mut last_pages, completed);
 
         let reasons = find_job_reasons(&resp);
         for r in &reasons {
@@ -1074,13 +1090,12 @@ fn print_with_config(inv: &bc::Invocation, cfg: &Config) -> i32 {
     let initial_pages = find_job_int(&resp, "job-impressions-completed")
         .and_then(|n| u32::try_from(n).ok())
         .unwrap_or(0);
-    for p in 1..=initial_pages {
-        bc::page(p, 1);
-    }
+    let mut emitted_pages = 0u32;
+    let _ = emit_page_updates(&mut emitted_pages, initial_pages);
 
     if target.wait_job {
         if let Some(jid) = remote_job_id {
-            return poll_job(&target, cfg, jid, &inv.user, initial_state, initial_pages);
+            return poll_job(&target, cfg, jid, &inv.user, initial_state, emitted_pages);
         }
     }
     bc::code::OK
@@ -1459,6 +1474,10 @@ mod tests {
                 ipp_reply(ops::status::ERROR_NOT_FOUND, None, None, None, &[]),
                 bc::code::OK,
             ),
+            (
+                ipp_reply(ops::status::OK, Some(1), Some(9), Some(i32::MAX), &[]),
+                bc::code::OK,
+            ),
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -1474,6 +1493,12 @@ mod tests {
             assert_eq!(rc, expected);
             srv.join().unwrap();
         }
+        // Verify emit_page_updates bounds i32::MAX to 1 event (no stderr flood/DoS).
+        let mut last = 0u32;
+        let max_pages = u32::try_from(i32::MAX).unwrap();
+        assert_eq!(emit_page_updates(&mut last, max_pages), 1);
+        assert_eq!(last, max_pages);
+        assert_eq!(emit_page_updates(&mut last, max_pages), 0);
     }
 
     #[test]

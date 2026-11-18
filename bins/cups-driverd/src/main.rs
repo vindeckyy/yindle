@@ -1347,9 +1347,9 @@ fn matches_filters(p: &Ppd, filters: &HashMap<String, String>) -> bool {
         if p.device_id.is_empty() {
             return false;
         }
-        // Match either full substring or MFG/MDL pair overlap.
+        // Match either full substring or non-empty MFG/MDL pair overlap.
         let direct = contains_ci(&p.device_id, devid);
-        let kv_match = devid
+        let mut kv_pairs = devid
             .split(';')
             .filter_map(|part| part.split_once(':'))
             .filter(|(k, v)| {
@@ -1357,7 +1357,10 @@ fn matches_filters(p: &Ppd, filters: &HashMap<String, String>) -> bool {
                     && (k.trim().eq_ignore_ascii_case("MFG")
                         || k.trim().eq_ignore_ascii_case("MDL"))
             })
-            .all(|(k, v)| contains_ci(&p.device_id, &format!("{}:{}", k.trim(), v.trim())));
+            .peekable();
+        let kv_match = kv_pairs.peek().is_some()
+            && kv_pairs
+                .all(|(k, v)| contains_ci(&p.device_id, &format!("{}:{}", k.trim(), v.trim())));
         if !direct && !kv_match {
             return false;
         }
@@ -1839,6 +1842,8 @@ mod tests {
             ("ppd-psversion", "9999.00"),
             ("ppd-natural-language", "ja"),
             ("ppd-device-id", "MFG:Nonexistent;MDL:Nope;"),
+            ("ppd-device-id", "CMD:NONEXISTENT;"),
+            ("ppd-device-id", "bogus"),
             ("ppd-type", "fax"),
         ] {
             let f = parse_list_filters(&format!("{k}={v}"));

@@ -464,7 +464,36 @@ fn probe_printer_uri(
     None
 }
 
-/// Discover SNMP responders and probe candidate printer ports.
+/// Send a single-OID unicast `SNMPv1` follow-up `GetRequest` to `dest`,
+/// tolerating `noSuchName` (`error_status != 0`) or timeouts cleanly.
+fn query_single_oid(
+    dest: SocketAddr,
+    community: &[u8],
+    req_id: i32,
+    oid: &[u32],
+    timeout: Duration,
+) -> Option<(Vec<u32>, BerValue)> {
+    let bind_addr = if dest.is_ipv6() {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    };
+    let sock = UdpSocket::bind(bind_addr).ok()?;
+    let _ = sock.set_read_timeout(Some(timeout));
+    let pkt = build_get_request(community, req_id, &[oid]);
+    sock.send_to(&pkt, dest).ok()?;
+    let mut buf = [0u8; 4096];
+    let (n, from) = sock.recv_from(&mut buf).ok()?;
+    if from.ip() != dest.ip() {
+        return None;
+    }
+    let resp = parse_snmp_response(&buf[..n], Some(req_id))?;
+    resp.varbinds.into_iter().next()
+}
+
+/// Discover SNMP responders via single-OID `sysDescr.0` broadcast (RFC 1157
+/// compliant — avoids `noSuchName` failures on non-HP printers), follow up
+/// individually for optional printer MIB OIDs, and probe candidate printer ports.
 fn discover_with(
     cfg: &SnmpConfig,
     snmp_port: u16,
@@ -479,14 +508,9 @@ fn discover_with(
     let _ = sock.set_read_timeout(Some(Duration::from_millis(150)));
 
     let req_id: i32 = 0x7054_6c75;
-    let oids: &[&[u32]] = &[
-        OID_SYS_DESCR,
-        OID_HR_DEVICE_DESCR,
-        OID_PWG_DEVICE_ID,
-        OID_HP_DEVICE_ID,
-    ];
     for community in &cfg.communities {
-        let pkt = build_get_request(community.as_bytes(), req_id, oids);
+        // Broadcast only `sysDescr.0` so SNMPv1 devices without vendor OIDs respond.
+        let pkt = build_get_request(community.as_bytes(), req_id, &[OID_SYS_DESCR]);
         for target in &cfg.addresses {
             let dest = if target.contains(':') && !target.starts_with('[') {
                 format!("[{target}]:{snmp_port}")
@@ -504,6 +528,7 @@ fn discover_with(
     let mut seen = HashSet::new();
     let mut found = Vec::new();
     let mut buf = [0u8; 4096];
+    let mut follow_id = req_id.wrapping_add(1);
 
     loop {
         let remain = deadline.saturating_duration_since(Instant::now());
@@ -513,15 +538,31 @@ fn discover_with(
         match sock.recv_from(&mut buf) {
             Ok((n, from)) => {
                 let ip = from.ip();
-                if !seen.insert(ip) {
+                if seen.contains(&ip) {
                     continue;
                 }
-                let Some(resp) = parse_snmp_response(&buf[..n], Some(req_id)) else {
+                let Some(mut resp) = parse_snmp_response(&buf[..n], Some(req_id)) else {
                     continue;
                 };
+                // Mark host seen only AFTER a valid SNMP response is parsed.
+                seen.insert(ip);
                 let Some(uri) = probe_printer_uri(ip, probe_ports, probe_timeout, ssrf) else {
                     continue;
                 };
+                // Individually query optional printer MIB OIDs so `noSuchName`
+                // on one vendor OID never discards the device or other OIDs.
+                for oid in [OID_HR_DEVICE_DESCR, OID_PWG_DEVICE_ID, OID_HP_DEVICE_ID] {
+                    follow_id = follow_id.wrapping_add(1);
+                    if let Some(vb) = query_single_oid(
+                        from,
+                        resp.community.as_bytes(),
+                        follow_id,
+                        oid,
+                        probe_timeout,
+                    ) {
+                        resp.varbinds.push(vb);
+                    }
+                }
                 let (make_model, device_id) = extract_printer_info(&resp);
                 let info = format!("{make_model} ({ip})");
                 found.push((uri, make_model, info, device_id));
@@ -740,6 +781,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn format_uri_and_live_udp_discovery_with_port_probe() {
         let v4: IpAddr = "192.168.1.20".parse().unwrap();
         let v6: IpAddr = "2001:db8::5".parse().unwrap();
@@ -789,21 +831,73 @@ mod tests {
 
         let t = thread::spawn(move || {
             let mut buf = [0u8; 1024];
-            let (_n, from) = udp_srv.recv_from(&mut buf).unwrap();
+            // 1. Initial discovery broadcast receives single-OID sysDescr request.
+            let (n, from) = udp_srv.recv_from(&mut buf).unwrap();
+            let (BerValue::Sequence(top), _) = decode_ber(&buf[..n], 0).unwrap() else {
+                panic!("expected sequence");
+            };
+            let BerValue::Context(0xa0, pdu) = &top[2] else {
+                panic!("expected GetRequest");
+            };
+            let BerValue::Sequence(vbs) = &pdu[3] else {
+                panic!("expected varbind list");
+            };
+            // Must broadcast single-OID sysDescr.0 (not multi-OID).
+            assert_eq!(vbs.len(), 1);
+
+            // First send a bogus wrong-reqid packet to verify premature `seen.insert` does NOT drop host!
+            let bogus = build_get_response(b"public", 999, 0, &[]);
+            udp_srv.send_to(&bogus, from).unwrap();
+
+            // Then send real sysDescr.0 response.
             let reply = build_get_response(
                 b"public",
                 0x7054_6c75,
                 0,
-                &[
-                    (
-                        OID_HR_DEVICE_DESCR,
-                        b"Brother \"HL-L2350DW\"\nnetwork evil://x",
-                    ),
-                    (OID_HP_DEVICE_ID, b"MFG:Brother;MDL:HL-L2350DW;"),
-                ],
+                &[(OID_SYS_DESCR, b"Brother \"HL-L2350DW\"\nnetwork evil://x")],
             );
             udp_srv.send_to(&reply, from).unwrap();
+
             let _ = tcp_printer.accept();
+
+            // 2. Answer the 3 individual unicast follow-up OID queries:
+            //    - OID_HR_DEVICE_DESCR -> noSuchName (error-status = 2)
+            //    - OID_PWG_DEVICE_ID   -> valid IEEE-1284 ID
+            //    - OID_HP_DEVICE_ID    -> noSuchName (error-status = 2)
+            for _ in 0..3 {
+                let (m, qfrom) = udp_srv.recv_from(&mut buf).unwrap();
+                let (BerValue::Sequence(qtop), _) = decode_ber(&buf[..m], 0).unwrap() else {
+                    continue;
+                };
+                let BerValue::Context(0xa0, qpdu) = &qtop[2] else {
+                    continue;
+                };
+                let BerValue::Integer(qrid) = qpdu[0] else {
+                    continue;
+                };
+                let BerValue::Sequence(qvbs) = &qpdu[3] else {
+                    continue;
+                };
+                let BerValue::Sequence(qpair) = &qvbs[0] else {
+                    continue;
+                };
+                let BerValue::ObjectIdentifier(queried_oid) = &qpair[0] else {
+                    continue;
+                };
+                let qrid_i32 = i32::try_from(qrid).unwrap();
+                let resp_pkt = if queried_oid.as_slice() == OID_PWG_DEVICE_ID {
+                    build_get_response(
+                        b"public",
+                        qrid_i32,
+                        0,
+                        &[(OID_PWG_DEVICE_ID, b"MFG:Brother;MDL:HL-L2350DW;")],
+                    )
+                } else {
+                    // Simulate SNMPv1 printer returning error-status=2 (noSuchName) for unsupported OIDs!
+                    build_get_response(b"public", qrid_i32, 2, &[(queried_oid.as_slice(), b"")])
+                };
+                udp_srv.send_to(&resp_pkt, qfrom).unwrap();
+            }
         });
 
         let cfg = SnmpConfig {

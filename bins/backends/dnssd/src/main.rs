@@ -74,33 +74,35 @@ fn build_dnssd_uri(remote: &dnssd::RemotePrinter) -> Option<String> {
     }
 }
 
-/// Prepare a `dnssd://` device URI for resolution by validating scheme/chars
-/// and decoding percent-encoded instance names.
+/// Validate a `dnssd://` device URI (scheme, non-empty authority, no raw or
+/// percent-encoded control chars) while keeping percent-encoding intact for
+/// `dnssd::resolve_uri` (preventing `%2F` path corruption and `%25` double-decoding).
 fn prepare_resolve_uri(device_uri: &str) -> Option<String> {
     if device_uri.bytes().any(|b| b < 0x20 || b == 0x7f) {
         return None;
     }
-    let rest = device_uri
-        .strip_prefix("dnssd://")
-        .or_else(|| device_uri.strip_prefix("DNSSD://"))?;
-    let (auth, path) = match rest.split_once('/') {
+    let (scheme, rest) = device_uri.split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("dnssd") {
+        return None;
+    }
+    let (raw_auth, raw_tail) = match rest.split_once('/') {
         Some((a, p)) => (a, Some(p)),
         None => (rest, None),
     };
-    let decoded_auth = bc::percent_decode(auth);
-    if decoded_auth.is_empty() || decoded_auth.bytes().any(|b| b < 0x20 || b == 0x7f) {
+    let decoded_auth = bc::percent_decode(raw_auth);
+    if raw_auth.is_empty()
+        || decoded_auth.is_empty()
+        || decoded_auth.bytes().any(|b| b < 0x20 || b == 0x7f)
+    {
         return None;
     }
-    match path {
-        Some(p) => {
-            let decoded_path = bc::percent_decode(p);
-            if decoded_path.bytes().any(|b| b < 0x20 || b == 0x7f) {
-                return None;
-            }
-            Some(format!("dnssd://{decoded_auth}/{decoded_path}"))
+    if let Some(tail) = raw_tail {
+        let decoded_tail = bc::percent_decode(tail);
+        if decoded_tail.bytes().any(|b| b < 0x20 || b == 0x7f) {
+            return None;
         }
-        None => Some(format!("dnssd://{decoded_auth}")),
     }
+    Some(format!("dnssd://{rest}"))
 }
 
 /// Validate a resolved target URI against scheme allowlist (`ipp://`/`ipps://`)
@@ -319,15 +321,22 @@ mod tests {
 
     #[test]
     fn resolve_preparation_and_ssrf_enforcement() {
+        // Preserves percent-encoding (%20, %2F, %25) intact so dnssd::resolve_uri
+        // splits authority/path cleanly without double-decoding or `/` corruption.
         assert_eq!(
             prepare_resolve_uri("dnssd://Office%20HP._ipp._tcp.local./ipp/print").as_deref(),
-            Some("dnssd://Office HP._ipp._tcp.local./ipp/print")
+            Some("dnssd://Office%20HP._ipp._tcp.local./ipp/print")
+        );
+        assert_eq!(
+            prepare_resolve_uri("DNSSD://A%2FB%20100%25._ipp._tcp.local./ipp/print").as_deref(),
+            Some("dnssd://A%2FB%20100%25._ipp._tcp.local./ipp/print")
         );
         assert_eq!(
             prepare_resolve_uri("dnssd://Printer._ipp._tcp.local.").as_deref(),
             Some("dnssd://Printer._ipp._tcp.local.")
         );
         assert!(prepare_resolve_uri("ipp://host/ipp").is_none());
+        assert!(prepare_resolve_uri("dnssd:///ipp/print").is_none());
         assert!(prepare_resolve_uri("dnssd://bad\r\n._ipp._tcp.local./ipp").is_none());
         assert!(prepare_resolve_uri("dnssd://bad%0a._ipp._tcp.local./ipp").is_none());
         assert!(prepare_resolve_uri("dnssd://ok._ipp._tcp.local./bad%0a").is_none());
@@ -373,7 +382,7 @@ mod tests {
             &inv,
             allow_lo,
             |q| {
-                assert_eq!(q, "dnssd://Office HP._ipp._tcp.local./ipp/print");
+                assert_eq!(q, "dnssd://Office%20HP._ipp._tcp.local./ipp/print");
                 Some("ipp://127.0.0.1:631/ipp/print".into())
             },
             |_a, real| {

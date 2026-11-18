@@ -50,12 +50,15 @@ fn enumerate_in(dev_dir: &Path, parport_dir: &Path, sysfs_dir: &Path) -> Vec<(St
     out
 }
 
+/// Extract device path from `parallel:///dev/lpN` or `parallel:/dev/lpN`.
 fn parse_parallel_uri(uri: &str) -> Option<String> {
-    let rest = uri
-        .strip_prefix("parallel://")
-        .or_else(|| uri.strip_prefix("PARALLEL://"))?;
-    let path = rest.split(['?', '#']).next().unwrap_or(rest);
-    if path.is_empty() {
+    let (scheme, rest) = uri.split_once(':')?;
+    if !scheme.eq_ignore_ascii_case("parallel") {
+        return None;
+    }
+    let path_raw = rest.strip_prefix("//").unwrap_or(rest);
+    let path = path_raw.split(['?', '#']).next().unwrap_or(path_raw);
+    if !path.starts_with('/') {
         return None;
     }
     Some(bc::percent_decode(path))
@@ -246,7 +249,17 @@ mod tests {
             ..inv_ok.clone()
         };
         assert_eq!(print_job(&inv_bad), bc::code::FAILED);
+        // Standard single-slash `parallel:/dev/lp0` and triple-slash both accepted.
+        assert_eq!(
+            parse_parallel_uri("parallel:/dev/lp0").as_deref(),
+            Some("/dev/lp0")
+        );
+        assert_eq!(
+            parse_parallel_uri("parallel:///dev/lp0").as_deref(),
+            Some("/dev/lp0")
+        );
         assert!(parse_parallel_uri("parallel://").is_none());
+        assert!(parse_parallel_uri("parallel:relative").is_none());
 
         let inv_nf = bc::Invocation {
             file: Some(base.join("missing").to_string_lossy().into_owned()),

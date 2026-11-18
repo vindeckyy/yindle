@@ -39,14 +39,17 @@ struct SerialSettings {
     flow: FlowControl,
 }
 
-/// Parse `(path, params)` from `serial:///dev/ttySN?baud=9600+parity=none+flow=dtrdsr`.
+/// Parse `(path, params)` from `serial:///dev/ttySN?baud=9600+parity=none`
+/// or standard single-slash `serial:/dev/ttySN?baud=9600+bits=8`.
 /// Accepts `+` (CUPS spec) as well as `&` as option separators.
 fn parse_uri(uri: &str) -> Option<(String, Vec<(String, String)>)> {
-    let rest = uri
-        .strip_prefix("serial://")
-        .or_else(|| uri.strip_prefix("SERIAL://"))?;
-    let (path_raw, query) = rest.split_once('?').map_or((rest, ""), |(p, q)| (p, q));
-    if path_raw.is_empty() {
+    let (scheme, rest) = uri.split_once(':')?;
+    if !scheme.eq_ignore_ascii_case("serial") {
+        return None;
+    }
+    let body = rest.strip_prefix("//").unwrap_or(rest);
+    let (path_raw, query) = body.split_once('?').map_or((body, ""), |(p, q)| (p, q));
+    if !path_raw.starts_with('/') {
         return None;
     }
     let params = query
@@ -304,8 +307,14 @@ mod tests {
         assert_eq!(validate_settings(&p4).unwrap().flow, FlowControl::None);
         assert_eq!(FlowControl::None.as_termios_str(), "none");
 
+        // Standard single-slash `serial:/dev/ttyS0?baud=9600+bits=8` also works.
+        let (p_single, params_single) = parse_uri("serial:/dev/ttyS0?baud=9600+bits=8").unwrap();
+        assert_eq!(p_single, "/dev/ttyS0");
+        assert_eq!(validate_settings(&params_single).unwrap().baud, Some(9600));
+
         assert!(parse_uri("usb:///dev/ttyS0").is_none());
         assert!(parse_uri("serial://").is_none());
+        assert!(parse_uri("serial:relative").is_none());
 
         // Invalid params rejected.
         for bad in [
