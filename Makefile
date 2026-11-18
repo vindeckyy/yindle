@@ -169,7 +169,7 @@ install-files:
 	# Documentation.
 	if [ "$(INSTALL_DOCS)" = "1" ]; then \
 		install -d -m 0755 "$(DESTDIR)$(DOCDIR)"; \
-		for doc in README.md SECURITY.md CHANGELOG.md LICENSE-APACHE LICENSE-MIT \
+		for doc in README.md SECURITY.md CHANGELOG.md NOTICE LICENSE-APACHE LICENSE-MIT \
 		           docs/conformance.md docs/deviations.md; do \
 			[ -f "$$doc" ] && install -m 0644 "$$doc" "$(DESTDIR)$(DOCDIR)/"; \
 		done; \

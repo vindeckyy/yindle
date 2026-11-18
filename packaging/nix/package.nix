@@ -85,7 +85,7 @@ rustPlatform.buildRustPackage rec {
     install -m 0644 data/tmpfiles.d/presswork.conf "$out/lib/tmpfiles.d/presswork.conf"
     install -m 0644 data/sysusers.d/presswork.conf "$out/lib/sysusers.d/presswork.conf"
 
-    for doc in README.md SECURITY.md CHANGELOG.md LICENSE-APACHE LICENSE-MIT; do
+    for doc in README.md SECURITY.md CHANGELOG.md NOTICE LICENSE-APACHE LICENSE-MIT; do
       [ -f "$doc" ] && install -m 0644 "$doc" "$out/share/doc/presswork/"
     done
   '';

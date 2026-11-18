@@ -44,6 +44,7 @@ cargo build --workspace --release --locked
 make install-files DESTDIR="$TAR_STAGE" PROFILE=release CHOWN=0 >/dev/null
 install -m 0755 install.sh "$TAR_STAGE/install.sh"
 install -m 0644 README.md "$TAR_STAGE/README.md"
+[ -f NOTICE ] && install -m 0644 NOTICE "$TAR_STAGE/NOTICE"
 [ -f LICENSE-APACHE ] && install -m 0644 LICENSE-APACHE "$TAR_STAGE/LICENSE-APACHE"
 [ -f LICENSE-MIT ] && install -m 0644 LICENSE-MIT "$TAR_STAGE/LICENSE-MIT"
 

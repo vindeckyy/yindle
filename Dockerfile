@@ -12,10 +12,19 @@ ARG RUNTIME_IMAGE=debian:bookworm-slim
 
 FROM ${RUST_IMAGE} AS builder
 
-# Create deterministic lp UID/GID (631:631) matching the runtime stage.
-RUN groupadd --system --gid 631 lp \
- && useradd --system --uid 631 --gid 631 --no-create-home \
-      --home-dir /var/spool/cups --shell /usr/sbin/nologin lp
+# Ensure deterministic lp UID/GID (631:631) matching the runtime stage.
+# Debian base-passwd pre-creates lp (7:7), so reassign if present.
+RUN if getent group lp >/dev/null 2>&1; then \
+      groupmod --gid 631 lp; \
+    else \
+      groupadd --system --gid 631 lp; \
+    fi \
+ && if id lp >/dev/null 2>&1; then \
+      usermod --uid 631 --gid 631 --home /var/spool/cups --shell /usr/sbin/nologin lp; \
+    else \
+      useradd --system --uid 631 --gid 631 --no-create-home \
+        --home-dir /var/spool/cups --shell /usr/sbin/nologin lp; \
+    fi
 
 WORKDIR /src
 COPY . .
@@ -51,10 +60,18 @@ RUN apt-get update \
       ca-certificates \
       libcap2-bin \
       $(if [ "${INSTALL_CUPS_FILTERS}" = "true" ]; then echo "cups-filters"; fi) \
- && groupadd --system --gid 631 lp \
- && useradd --system --uid 631 --gid 631 --no-create-home \
-      --home-dir /var/spool/cups --shell /usr/sbin/nologin lp \
- && groupadd --system lpadmin \
+ && if getent group lp >/dev/null 2>&1; then \
+      groupmod --gid 631 lp; \
+    else \
+      groupadd --system --gid 631 lp; \
+    fi \
+ && if id lp >/dev/null 2>&1; then \
+      usermod --uid 631 --gid 631 --home /var/spool/cups --shell /usr/sbin/nologin lp; \
+    else \
+      useradd --system --uid 631 --gid 631 --no-create-home \
+        --home-dir /var/spool/cups --shell /usr/sbin/nologin lp; \
+    fi \
+ && (getent group lpadmin >/dev/null 2>&1 || groupadd --system lpadmin) \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /stage /
