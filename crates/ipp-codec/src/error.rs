@@ -44,6 +44,12 @@ pub enum CodecError {
     CollectionValueNotEmpty { at: usize },
     /// Collection nesting deeper than libcups' limit of 10.
     CollectionTooDeep,
+    /// Message exceeded a decoder safety cap (groups, attributes, values, or bytes).
+    LimitExceeded {
+        kind: &'static str,
+        limit: usize,
+        at: usize,
+    },
     /// Encoding was asked to write something that can't go on the wire.
     Encode(String),
 }
@@ -104,6 +110,9 @@ impl fmt::Display for CodecError {
                 write!(f, "collection delimiter with non-empty value at offset {at}")
             }
             Self::CollectionTooDeep => write!(f, "collections nested more than 10 deep"),
+            Self::LimitExceeded { kind, limit, at } => {
+                write!(f, "{kind} limit ({limit}) exceeded at offset {at}")
+            }
             Self::Encode(msg) => write!(f, "encode error: {msg}"),
         }
     }

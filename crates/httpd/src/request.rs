@@ -1,4 +1,7 @@
-//! Parsed HTTP request line + headers + body framing.
+//! Parsed HTTP request line + headers + body framing (in-memory or disk-spooled).
+
+use std::io;
+use std::path::{Path, PathBuf};
 
 use crate::Headers;
 
@@ -11,12 +14,12 @@ pub enum HttpVersion {
     V10,
     /// `HTTP/1.1` — keep-alive by default, `Host` required.
     V11,
-    /// Anything else — cupsd answers `505 Not Supported`.
+    /// Anything else — `cupsd` answers `505 Not Supported`.
     Other,
 }
 
 /// Request method. Unknown methods parse as `Unknown` and the handler
-/// decides (upstream maps unknown → `HTTP_STATUS_ERROR` → 400/501).
+/// decides (upstream maps unknown -> `HTTP_STATUS_ERROR` -> 400/501).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     /// `OPTIONS` — used by RFC 2817 TLS upgrade (`OPTIONS *`).
@@ -41,7 +44,7 @@ pub enum Method {
 }
 
 impl Method {
-    /// Parse a method token (case-sensitive, uppercase per RFC 7230;
+    /// Parse a method token (case-sensitive, uppercase per RFC 9110;
     /// upstream `httpUpdate()` compares exactly).
     #[must_use]
     pub fn parse(s: &str) -> Self {
@@ -75,30 +78,148 @@ impl Method {
     }
 }
 
-/// Request body — already buffered (cupsd spools bodies it needs; for
-/// IPP the body is decoded in place by `ipp-codec`).
+/// A large request body streamed directly to a private (`0600`) temporary file
+/// on disk so large print jobs never OOM RAM.
+///
+/// Automatically removes its temp file on [`Drop`] unless moved via [`Self::persist`].
+#[derive(Debug)]
+pub struct SpooledBody {
+    path: Option<PathBuf>,
+    len: u64,
+}
+
+impl SpooledBody {
+    pub(crate) const fn new(path: PathBuf, len: u64) -> Self {
+        Self {
+            path: Some(path),
+            len,
+        }
+    }
+
+    /// Path to the temporary spool file on disk.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.path.as_deref().unwrap_or_else(|| Path::new(""))
+    }
+
+    /// Total length of the spooled payload in bytes.
+    #[must_use]
+    pub const fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// Returns `true` if the spooled payload is empty.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Open the spooled file for reading.
+    pub fn open(&self) -> io::Result<std::fs::File> {
+        std::fs::File::open(self.path())
+    }
+
+    /// Read the entire spooled file into memory.
+    pub fn read_all(&self) -> io::Result<Vec<u8>> {
+        std::fs::read(self.path())
+    }
+
+    /// Persist (rename) the temporary spool file to `dest`, disarming automatic cleanup.
+    pub fn persist(mut self, dest: &Path) -> io::Result<()> {
+        let Some(src) = self.path.take() else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "spooled body already moved",
+            ));
+        };
+        if let Err(err) = std::fs::rename(&src, dest) {
+            // Put path back so Drop still cleans up on rename failure.
+            self.path = Some(src);
+            return Err(err);
+        }
+        Ok(())
+    }
+}
+
+impl Drop for SpooledBody {
+    fn drop(&mut self) {
+        if let Some(p) = self.path.take() {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+/// Request body — either buffered in RAM or streamed to a temporary spool file.
 #[derive(Debug)]
 pub enum Body {
     /// No body.
     Empty,
     /// Buffered body (`Content-Length` or chunked-decoded).
     Bytes(Vec<u8>),
-    /// Body extends to EOF — `Connection: close` semantics. Buffered
-    /// here; callers wanting streaming go through the server directly.
+    /// Body extends to EOF — `Connection: close` semantics.
     UntilEof(Vec<u8>),
+    /// Large body streamed to a `0600` temp file on disk (avoids OOM on large print jobs).
+    Spooled(SpooledBody),
 }
 
 impl Body {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        matches!(self, Self::Empty) || self.as_bytes().is_empty()
+        self.byte_len() == 0
     }
 
+    /// Exact payload length in bytes (works for both in-memory and spooled bodies).
+    #[must_use]
+    pub fn byte_len(&self) -> u64 {
+        match self {
+            Self::Empty => 0,
+            Self::Bytes(b) | Self::UntilEof(b) => b.len() as u64,
+            Self::Spooled(s) => s.len(),
+        }
+    }
+
+    /// In-memory byte slice (empty for [`Self::Empty`] and [`Self::Spooled`]).
+    ///
+    /// Callers accepting spooled bodies should check [`Self::spooled_path`] or
+    /// call [`Self::read_all`].
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         match self {
-            Self::Empty => &[],
+            Self::Empty | Self::Spooled(_) => &[],
             Self::Bytes(b) | Self::UntilEof(b) => b,
+        }
+    }
+
+    /// `true` if this body was spooled to disk.
+    #[must_use]
+    pub const fn is_spooled(&self) -> bool {
+        matches!(self, Self::Spooled(_))
+    }
+
+    /// Temporary file path if the body was spooled to disk.
+    #[must_use]
+    pub fn spooled_path(&self) -> Option<&Path> {
+        match self {
+            Self::Spooled(s) => Some(s.path()),
+            _ => None,
+        }
+    }
+
+    /// Extract ownership of the [`SpooledBody`] handle if spooled.
+    #[must_use]
+    pub fn into_spooled(self) -> Option<SpooledBody> {
+        match self {
+            Self::Spooled(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Return the full body bytes, reading from disk if spooled.
+    pub fn read_all(&self) -> io::Result<Vec<u8>> {
+        match self {
+            Self::Empty => Ok(Vec::new()),
+            Self::Bytes(b) | Self::UntilEof(b) => Ok(b.clone()),
+            Self::Spooled(s) => s.read_all(),
         }
     }
 }
@@ -117,7 +238,7 @@ pub struct Request {
     pub version: HttpVersion,
     /// Header collection.
     pub headers: Headers,
-    /// Buffered body.
+    /// Request body (in-memory or spooled).
     pub body: Body,
     /// Whether the client asked for the connection to stay open,
     /// resolved against version + `Connection:` (upstream
@@ -136,11 +257,16 @@ impl Request {
         self.headers.get("content-type")
     }
 
-    /// `Content-Length` if present and valid.
+    /// `Content-Length` if present as a single valid non-negative ASCII integer.
     #[must_use]
     pub fn content_length(&self) -> Option<usize> {
-        self.headers
-            .get("content-length")
-            .and_then(|v| v.parse().ok())
+        if self.headers.count("content-length") != 1 {
+            return None;
+        }
+        let v = self.headers.get("content-length")?;
+        if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        v.parse().ok()
     }
 }
