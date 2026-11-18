@@ -225,6 +225,10 @@ pub struct SpawnOptions {
     /// Whether the first stage receives `data_file` as `argv[6]` (`true` for
     /// file-backed jobs, `false` when streaming solely via stdin).
     pub input_is_file: bool,
+    /// Whether to pipe and capture the backend's stdout on [`Pipeline`].
+    /// Defaults to `false` (`Stdio::null()`, matching CUPS print-mode backend ABI)
+    /// so backends emitting verbose stdout cannot deadlock on an unread pipe.
+    pub capture_backend_stdout: bool,
 }
 
 impl Default for SpawnOptions {
@@ -250,6 +254,7 @@ impl Default for SpawnOptions {
             document_number: None,
             document_name: None,
             input_is_file: true,
+            capture_backend_stdout: false,
         }
     }
 }
@@ -351,6 +356,9 @@ impl Pipeline {
     /// Wait for the backend and all filter stages to finish, join all stderr
     /// status reader threads, and return the classified [`PipelineExit`].
     pub fn wait_all(mut self) -> io::Result<PipelineExit> {
+        // Drop any unread backend stdout pipe before waiting so a backend
+        // writing >64 KiB to stdout cannot deadlock waiting for a reader.
+        drop(self.backend_stdout.take());
         let bstatus = self.backend.wait()?;
         let mut filter_exits = Vec::with_capacity(self.filters.len());
         for (i, f) in self.filters.iter_mut().enumerate() {
@@ -648,7 +656,13 @@ impl JobSpec {
         };
         let bprog = resolve_trusted_executable(&self.backend_dir, backend_name, &opts.security)?;
         let active_filters = self.resolve_active_filters(chain, &opts.security)?;
-        let cups_exec = resolve_cups_exec(opts)?;
+        let cups_exec = resolve_cups_exec(opts, &self.filter_dir)?;
+
+        let (eff_user, _) = current_euid_egid();
+        if !active_filters.is_empty() {
+            validate_stage_privilege_drop(eff_user, false, &opts.sandbox, cups_exec.is_some())?;
+        }
+        validate_stage_privilege_drop(eff_user, true, &opts.sandbox, cups_exec.is_some())?;
 
         let (tx, internal_rx) = make_status_channel(opts);
         let backchannel = opts.enable_backchannel.then(BackChannel::new).transpose()?;
@@ -675,10 +689,15 @@ impl JobSpec {
             true,
             opts,
             cups_exec.as_deref(),
-        );
+        )?;
         apply_process_group(&mut bc, opts.process_group, spawned.pgid);
+        let backend_stdout_cfg = if opts.capture_backend_stdout {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        };
         bc.stdin(spawned.next_stdin)
-            .stdout(Stdio::piped())
+            .stdout(backend_stdout_cfg)
             .stderr(Stdio::piped());
 
         let mut backend = match bc.spawn() {
@@ -732,7 +751,9 @@ impl JobSpec {
             ));
         }
 
-        let cups_exec = resolve_cups_exec(opts)?;
+        let cups_exec = resolve_cups_exec(opts, &self.filter_dir)?;
+        let (eff_user, _) = current_euid_egid();
+        validate_stage_privilege_drop(eff_user, false, &opts.sandbox, cups_exec.is_some())?;
         let data = sys::open_readonly_nofollow(&self.data_file)?;
         let (tx, internal_rx) = make_status_channel(opts);
         let mut spawned = self.spawn_filter_stages(
@@ -784,7 +805,7 @@ impl JobSpec {
                 false,
                 opts,
                 cups_exec,
-            );
+            )?;
             apply_process_group(&mut cmd, opts.process_group, pgid);
             let stage_stdout = if idx == last_idx && !pipe_last_to_backend {
                 final_stdout.take().unwrap_or_else(Stdio::inherit)
@@ -897,11 +918,64 @@ fn make_status_channel(
     }
 }
 
-fn resolve_cups_exec(opts: &SpawnOptions) -> io::Result<Option<PathBuf>> {
-    if opts.sandbox.mode == cups_config::Sandboxing::Off {
+/// Validate privilege-drop and sandboxing invariants before spawning a stage.
+///
+/// Security invariants when running as root (`eff_user == 0`):
+/// - Refuses to execute an untrusted filter stage (`!is_backend`) as `uid 0`
+///   when sandboxing is active (`mode != Sandboxing::Off`).
+/// - Refuses to drop privileges or enforce sandboxing without `cups-exec`:
+///   stable Rust's `CommandExt::{uid, gid}` cannot clear supplementary root
+///   groups (`CommandExt::groups` is unstable `#![feature(setgroups)]`), whereas
+///   `cups-exec` calls `presswork_sys::drop_privileges` (`initgroups`/`setgroups(0, NULL)`
+///   + `setgid` + `setuid` + `PR_SET_NO_NEW_PRIVS` + Landlock).
+pub fn validate_stage_privilege_drop(
+    eff_user: u32,
+    is_backend: bool,
+    sandbox: &SandboxConfig,
+    has_cups_exec: bool,
+) -> io::Result<()> {
+    if eff_user != 0 {
+        return Ok(());
+    }
+    if !is_backend && sandbox.mode != cups_config::Sandboxing::Off && sandbox.uid.unwrap_or(0) == 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "refusing to execute sandboxed filter as uid 0 (root)",
+        ));
+    }
+    let wants_drop = sandbox.uid.is_some_and(|u| u != 0) || sandbox.gid.is_some_and(|g| g != 0);
+    if !has_cups_exec && (sandbox.mode != cups_config::Sandboxing::Off || wants_drop) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "root sandboxing/privilege drop requires cups-exec to clear supplementary root groups",
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_cups_exec(opts: &SpawnOptions, filter_dir: &Path) -> io::Result<Option<PathBuf>> {
+    let (eff_user, _) = current_euid_egid();
+    let wants_root_drop = eff_user == 0
+        && (opts.sandbox.uid.is_some_and(|u| u != 0) || opts.sandbox.gid.is_some_and(|g| g != 0));
+    if opts.sandbox.mode == cups_config::Sandboxing::Off && !wants_root_drop {
         return Ok(None);
     }
-    let Some(ref exec_path) = opts.sandbox.cups_exec_path else {
+
+    let candidate = if let Some(ref exec_path) = opts.sandbox.cups_exec_path {
+        Some(exec_path.clone())
+    } else if eff_user == 0 {
+        let base = opts
+            .server_bin
+            .clone()
+            .or_else(|| filter_dir.parent().map(Path::to_path_buf));
+        base.map(|b| b.join("daemon").join("cups-exec"))
+            .filter(|p| p.is_file())
+    } else {
+        None
+    };
+
+    let Some(exec_path) = candidate else {
         return Ok(None);
     };
     let parent = exec_path.parent().ok_or_else(|| {
@@ -926,8 +1000,27 @@ fn build_stage_command(
     is_backend: bool,
     opts: &SpawnOptions,
     cups_exec: Option<&Path>,
-) -> Command {
+) -> io::Result<Command> {
     let (eff_user, eff_group) = current_euid_egid();
+    build_stage_command_for_ids(
+        program, argv0, stage_args, env, is_backend, opts, cups_exec, eff_user, eff_group,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_stage_command_for_ids(
+    program: &Path,
+    argv0: &str,
+    stage_args: &[String],
+    env: &HashMap<String, String>,
+    is_backend: bool,
+    opts: &SpawnOptions,
+    cups_exec: Option<&Path>,
+    eff_user: u32,
+    eff_group: u32,
+) -> io::Result<Command> {
+    validate_stage_privilege_drop(eff_user, is_backend, &opts.sandbox, cups_exec.is_some())?;
+
     let (run_user, run_group) = if eff_user == 0 {
         (
             opts.sandbox.uid.unwrap_or(eff_user),
@@ -950,23 +1043,12 @@ fn build_stage_command(
         );
         let mut cmd = Command::new(exec_bin);
         cmd.args(exec_args).env_clear().envs(env);
-        return cmd;
+        return Ok(cmd);
     }
 
     let mut cmd = Command::new(program);
     cmd.arg0(argv0).args(stage_args).env_clear().envs(env);
-    // When running as root without `cups-exec`, still honor User/Group privilege drop.
-    if eff_user == 0 {
-        if let Some(gid) = opts.sandbox.gid {
-            cmd.gid(gid);
-        }
-        if let Some(uid) = opts.sandbox.uid {
-            if uid != 0 {
-                cmd.uid(uid);
-            }
-        }
-    }
-    cmd
+    Ok(cmd)
 }
 
 fn apply_process_group(cmd: &mut Command, enabled: bool, existing_pgid: Option<i32>) {

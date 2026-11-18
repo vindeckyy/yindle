@@ -8,11 +8,13 @@
 mod cli;
 
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, Read, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use cli::{parse_cli, usage_text, CliAction, CliArgs};
 use cups_config::{Config, CupsFilesConfig, CupsdConfig, Paths};
@@ -111,7 +113,7 @@ fn load_effective_config<S: std::hash::BuildHasher>(
         cfg.cupsd = cupsd_cfg;
     } else {
         let paths = Paths::resolve(Some(&server_root));
-        if paths.cupsd_conf.is_file() {
+        if paths.cupsd_conf.is_file() || paths.cups_files_conf.is_file() {
             let outcome = cups_config::load(&paths);
             cfg = outcome.config;
         }
@@ -163,25 +165,70 @@ fn load_effective_config<S: std::hash::BuildHasher>(
     ))
 }
 
-/// Spool stdin bytes into a private `0600` temporary file under `temp_dir`.
+/// Stream stdin directly into an exclusive `0600` temporary file under `temp_dir`
+/// in fixed 16 KiB chunks (zero unbounded RAM buffering, overflow-safe size cap).
 fn spool_stdin_to_temp_with_limit<R: Read>(
     stdin: &mut R,
     temp_dir: &Path,
     max_bytes: u64,
 ) -> io::Result<TempFileGuard> {
     std::fs::create_dir_all(temp_dir)?;
-    let mut data = Vec::new();
-    stdin.take(max_bytes + 1).read_to_end(&mut data)?;
-    if data.len() as u64 > max_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "stdin input exceeds maximum allowed size",
-        ));
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+
+    let (mut file, guard) = create_exclusive_temp_file(temp_dir, pid, nanos)?;
+
+    let mut buf = [0u8; 16 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = stdin.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        let chunk_len = n as u64;
+        if chunk_len > max_bytes.saturating_sub(total) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stdin input exceeds maximum allowed size",
+            ));
+        }
+        file.write_all(&buf[..n])?;
+        total += chunk_len;
     }
-    let seq = STDIN_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp_path = temp_dir.join(format!("cupsfilter-stdin-{}-{seq}", std::process::id()));
-    sys::atomic_write_secure(&tmp_path, &data, 0o600, false)?;
-    Ok(TempFileGuard(Some(tmp_path)))
+    file.flush()?;
+    Ok(guard)
+}
+
+fn create_exclusive_temp_file(
+    temp_dir: &Path,
+    pid: u32,
+    nanos: u32,
+) -> io::Result<(File, TempFileGuard)> {
+    for _ in 0..32 {
+        let seq = STDIN_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = temp_dir.join(format!(".cupsfilter-stdin-{pid}-{nanos}-{seq}"));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp_path)
+        {
+            Ok(f) => {
+                // Guard immediately so partial files are always removed on error.
+                let guard = TempFileGuard(Some(tmp_path));
+                let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+                return Ok((f, guard));
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "failed to create unique stdin spool file",
+    ))
 }
 
 fn spool_stdin_to_temp<R: Read>(stdin: &mut R, temp_dir: &Path) -> io::Result<TempFileGuard> {
@@ -513,13 +560,16 @@ fn run_cupsfilter<R: Read, W: Write, E: Write, S: std::hash::BuildHasher>(
         )
     };
 
-    // Post-conversion cleanup flags (`-D`, `-u`).
-    if cli.delete_input && is_explicit_file {
-        let _ = std::fs::remove_file(&input_path);
-    }
-    if cli.remove_ppd {
-        if let Some(ref p) = cli.ppd {
-            let _ = std::fs::remove_file(p);
+    // Post-conversion cleanup flags (`-D`, `-u`): NEVER delete files during
+    // read-only `--list-filters` dry-run mode!
+    if !cli.list_filters {
+        if cli.delete_input && is_explicit_file {
+            let _ = std::fs::remove_file(&input_path);
+        }
+        if cli.remove_ppd {
+            if let Some(ref p) = cli.ppd {
+                let _ = std::fs::remove_file(p);
+            }
         }
     }
 
@@ -1152,9 +1202,77 @@ printf 'FOO(%s)' "$(cat)"
         assert!(load_effective_config(Some(&bad_conf), &env).is_err());
         assert!(load_effective_config(Some(&te.root.join("missing.conf")), &env).is_err());
 
-        // Stdin spool size limit
+        // Stdin spool size limit (cleans up partial temp file, handles u64::MAX without overflow)
+        let spool_dir = te.temp_dir.join("stream-test");
         let mut big: &[u8] = b"0123456789abcdef";
-        assert!(spool_stdin_to_temp_with_limit(&mut big, &te.temp_dir, 8).is_err());
+        assert!(spool_stdin_to_temp_with_limit(&mut big, &spool_dir, 8).is_err());
+        assert_eq!(fs::read_dir(&spool_dir).expect("readdir").count(), 0);
+        let mut small: &[u8] = b"tiny";
+        let ok_guard =
+            spool_stdin_to_temp_with_limit(&mut small, &spool_dir, u64::MAX).expect("u64::MAX");
+        let p = ok_guard.path().expect("path").to_path_buf();
+        assert_eq!(fs::read(&p).expect("read"), b"tiny");
+        assert_eq!(
+            fs::metadata(&p).expect("meta").permissions().mode() & 0o777,
+            0o600
+        );
+        drop(ok_guard);
+        assert!(!p.exists());
+
+        // Regression test: `--list-filters` with explicit filename (no `-i`) + `-D` + `-u`
+        // MUST NOT delete the input file or PPD file!
+        let keep_input = te.root.join("keep_me.txt");
+        let keep_ppd = te.root.join("keep_me.ppd");
+        fs::write(&keep_input, b"do not delete").expect("write keep_input");
+        fs::write(&keep_ppd, "*cupsFilter: \"application/pdf 10 -\"\n").expect("write keep_ppd");
+        let mut empty_in_keep: &[u8] = b"";
+        let mut out_keep = Vec::new();
+        let mut err_keep = Vec::new();
+        assert_eq!(
+            run_cupsfilter(
+                &argv(&[
+                    "cupsfilter",
+                    "--list-filters",
+                    "-D",
+                    "-u",
+                    "-p",
+                    keep_ppd.to_str().expect("str"),
+                    "-m",
+                    "application/pdf",
+                    keep_input.to_str().expect("str"),
+                ]),
+                &env,
+                &mut empty_in_keep,
+                &mut out_keep,
+                &mut err_keep,
+            ),
+            0
+        );
+        assert_eq!(String::from_utf8_lossy(&out_keep), "texttopdf\n");
+        assert!(
+            keep_input.exists(),
+            "--list-filters must NOT delete input (-D)"
+        );
+        assert!(keep_ppd.exists(), "--list-filters must NOT delete PPD (-u)");
+
+        // Standalone cups-files.conf (without cupsd.conf) is also loaded.
+        let standalone_root = te.root.join("standalone-etc");
+        fs::create_dir_all(&standalone_root).expect("mkdir standalone");
+        fs::write(
+            standalone_root.join("cups-files.conf"),
+            "Sandboxing relaxed\n",
+        )
+        .expect("write standalone files conf");
+        let standalone_env = HashMap::from([(
+            "CUPS_SERVERROOT".to_string(),
+            standalone_root.to_string_lossy().into_owned(),
+        )]);
+        let (standalone_cfg, _) =
+            load_effective_config(None, &standalone_env).expect("load standalone");
+        assert_eq!(
+            standalone_cfg.files.sandboxing,
+            cups_config::Sandboxing::Relaxed
+        );
 
         // Filter exiting non-zero -> exit 1
         te.write_filter("texttopdf", "#!/bin/sh\necho 'ERROR: boom' >&2\nexit 7\n");

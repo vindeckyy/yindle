@@ -550,12 +550,29 @@ rlimit-core=0
         env.insert("TMPDIR".into(), "/var/spool/cups/tmp".into());
         env.insert("PPD".into(), "/etc/cups/ppd/q.ppd".into());
         env.insert("LD_PRELOAD".into(), "/evil.so".into());
+        env.insert("DYLD_INSERT_LIBRARIES".into(), "/evil.dylib".into());
         env.insert("BASH_ENV".into(), "/evil.sh".into());
+        env.insert("SHELLOPTS".into(), "xtrace".into());
+        env.insert("PS4".into(), "$(id)".into());
+        env.insert("PYTHONHOME".into(), "/tmp/py".into());
+        env.insert("MALLOC_TRACE".into(), "/tmp/trace".into());
+        // Multi-byte UTF-8 keys crossing byte index 3 and 5 must never panic!
+        env.insert("abé".into(), "utf8-ok-1".into());
+        env.insert("éx".into(), "utf8-ok-2".into());
+        env.insert("abcdé".into(), "utf8-ok-3".into());
         env.insert("PRINTER".into(), "q".into());
 
         let clean = scrub_exec_env(&env);
         assert!(!clean.contains_key("LD_PRELOAD"));
+        assert!(!clean.contains_key("DYLD_INSERT_LIBRARIES"));
         assert!(!clean.contains_key("BASH_ENV"));
+        assert!(!clean.contains_key("SHELLOPTS"));
+        assert!(!clean.contains_key("PS4"));
+        assert!(!clean.contains_key("PYTHONHOME"));
+        assert!(!clean.contains_key("MALLOC_TRACE"));
+        assert_eq!(clean.get("abé").map(String::as_str), Some("utf8-ok-1"));
+        assert_eq!(clean.get("éx").map(String::as_str), Some("utf8-ok-2"));
+        assert_eq!(clean.get("abcdé").map(String::as_str), Some("utf8-ok-3"));
         assert_eq!(clean.get("PRINTER").map(String::as_str), Some("q"));
 
         let argv_vec = |xs: &[&str]| xs.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();

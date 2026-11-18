@@ -715,18 +715,38 @@ pub fn scrub_exec_env<S: std::hash::BuildHasher>(
 ) -> HashMap<String, String> {
     const DANGEROUS: &[&str] = &[
         "BASH_ENV",
+        "CDPATH",
         "ENV",
         "GCONV_PATH",
+        "GETCONF_DIR",
+        "HOSTALIASES",
         "IFS",
+        "LOCPATH",
+        "MALLOC_TRACE",
         "NODE_OPTIONS",
         "PERL5LIB",
+        "PERL5OPT",
+        "PERLLIB",
+        "PS4",
+        "PYTHONHOME",
         "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "RES_OPTIONS",
+        "RESOLV_HOST_CONF",
         "RUBYLIB",
+        "RUBYOPT",
+        "SHELLOPTS",
     ];
     let mut out = HashMap::new();
     for (k, v) in env {
-        let is_ld = k.len() >= 3 && k[..3].eq_ignore_ascii_case("LD_");
-        let is_bad = is_ld || DANGEROUS.iter().any(|d| d.eq_ignore_ascii_case(k));
+        let bytes = k.as_bytes();
+        let is_ld = bytes
+            .get(..3)
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"LD_"));
+        let is_dyld = bytes
+            .get(..5)
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"DYLD_"));
+        let is_bad = is_ld || is_dyld || DANGEROUS.iter().any(|d| d.eq_ignore_ascii_case(k));
         if !is_bad && !k.contains('\0') && !v.contains('\0') {
             out.insert(k.clone(), v.clone());
         }

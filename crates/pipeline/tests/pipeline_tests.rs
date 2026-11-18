@@ -16,11 +16,11 @@ use pipeline::{
     parse_kv_pairs, parse_page_event, parse_ppd_filters, parse_proc_status_ids,
     parse_state_changes, parse_status_line, resolve_trusted_executable, sandbox_profile_name,
     sanitize_env_value, sanitize_extra_env, try_backend_for_uri, validate_program_name,
-    validate_uri_scheme, verify_executable_metadata, BackChannel, BackendExit, FilterExit,
-    JobDocument, JobSpec, KillSignal, LandlockContext, LogSeverity, OsSandboxOps, OsSignalSender,
-    PageEvent, PipelineExit, PpdFilter, SandboxConfig, SandboxOps, SecurityPolicy, SideChannel,
-    SideChannelCommand, SideChannelMessage, SideChannelStatus, SignalSender, SpawnOptions, StatBuf,
-    StateChange, StatusEvent, CUPS_BC_FD, CUPS_SC_FD,
+    validate_stage_privilege_drop, validate_uri_scheme, verify_executable_metadata, BackChannel,
+    BackendExit, FilterExit, JobDocument, JobSpec, KillSignal, LandlockContext, LogSeverity,
+    OsSandboxOps, OsSignalSender, PageEvent, PipelineExit, PpdFilter, SandboxConfig, SandboxOps,
+    SecurityPolicy, SideChannel, SideChannelCommand, SideChannelMessage, SideChannelStatus,
+    SignalSender, SpawnOptions, StatBuf, StateChange, StatusEvent, CUPS_BC_FD, CUPS_SC_FD,
 };
 use sys::{LandlockRule, LandlockStatus, Rlimits};
 
@@ -209,6 +209,7 @@ printf '%s:backend' "$(cat)" > "{}"
         rip_max_cache: Some("64m".into()),
         document_number: Some(1),
         document_name: Some("doc1.txt".into()),
+        capture_backend_stdout: true,
         ..SpawnOptions::default()
     };
 
@@ -839,12 +840,30 @@ fn status_parser_and_bounded_statbuf() {
     );
 
     assert_eq!(parse_page_event(" total 12 "), Some(PageEvent::Total(12)));
+    assert_eq!(parse_page_event("total   42"), Some(PageEvent::Total(42)));
+    assert_eq!(parse_page_event("total\t\t7"), Some(PageEvent::Total(7)));
     assert_eq!(
         parse_page_event("2 3"),
         Some(PageEvent::Sheet {
             page: 2,
             copies: 3,
             extra: None
+        })
+    );
+    assert_eq!(
+        parse_page_event("1  2"),
+        Some(PageEvent::Sheet {
+            page: 1,
+            copies: 2,
+            extra: None
+        })
+    );
+    assert_eq!(
+        parse_page_event("1\t\t3   media=a4  extra"),
+        Some(PageEvent::Sheet {
+            page: 1,
+            copies: 3,
+            extra: Some("media=a4  extra".into())
         })
     );
     assert_eq!(
@@ -856,6 +875,7 @@ fn status_parser_and_bounded_statbuf() {
         })
     );
     assert_eq!(parse_page_event("bad"), None);
+    assert_eq!(parse_page_event("   "), None);
     assert_eq!(
         parse_status_line("PAGE: bad"),
         StatusEvent::Log {
@@ -1378,4 +1398,77 @@ fn sandbox_rules_ops_exit_codes_and_ppd_options() {
         formatted,
         r#"media=iso_a4 job-sheets="top \"secret\" \\x" landscape"#
     );
+
+    // Root privilege-drop & fail-closed validation (no supplementary group leak / no root filter).
+    let strict_root_filter = SandboxConfig {
+        mode: Sandboxing::Strict,
+        uid: None,
+        gid: None,
+        ..SandboxConfig::default()
+    };
+    assert!(validate_stage_privilege_drop(0, false, &strict_root_filter, true).is_err());
+    assert!(validate_stage_privilege_drop(0, false, &strict_root_filter, false).is_err());
+    // Root backend under Strict requires cups-exec; allowed when cups-exec is present.
+    assert!(validate_stage_privilege_drop(0, true, &strict_root_filter, false).is_err());
+    assert!(validate_stage_privilege_drop(0, true, &strict_root_filter, true).is_ok());
+
+    let strict_dropped = SandboxConfig {
+        mode: Sandboxing::Strict,
+        uid: Some(7),
+        gid: Some(7),
+        ..SandboxConfig::default()
+    };
+    // Without cups-exec, dropping from root is refused so root's supplementary group 0 cannot leak.
+    assert!(validate_stage_privilege_drop(0, false, &strict_dropped, false).is_err());
+    assert!(validate_stage_privilege_drop(0, false, &strict_dropped, true).is_ok());
+
+    let off_with_drop = SandboxConfig {
+        mode: Sandboxing::Off,
+        uid: Some(7),
+        gid: Some(7),
+        ..SandboxConfig::default()
+    };
+    assert!(validate_stage_privilege_drop(0, false, &off_with_drop, false).is_err());
+    assert!(validate_stage_privilege_drop(0, false, &off_with_drop, true).is_ok());
+
+    let off_no_drop = SandboxConfig {
+        mode: Sandboxing::Off,
+        uid: None,
+        gid: None,
+        ..SandboxConfig::default()
+    };
+    assert!(validate_stage_privilege_drop(0, false, &off_no_drop, false).is_ok());
+    assert!(validate_stage_privilege_drop(1000, false, &strict_root_filter, false).is_ok());
+}
+
+#[test]
+fn verbose_backend_stdout_never_deadlocks_default_or_uncaptured_wait() {
+    let td = TestDir::new("stdout-deadlock");
+    let backend_dir = td.path().join("backend");
+    let spool = td.path().join("spool");
+    fs::write(&spool, b"hi").expect("write");
+
+    // Backend writes 128 KiB (> Linux 64 KiB pipe buffer) to stdout.
+    write_script(
+        &backend_dir,
+        "noisy",
+        "#!/bin/sh\ndd if=/dev/zero bs=1024 count=128 2>/dev/null\nexit 0\n",
+    );
+
+    let spec = base_spec(td.path(), spool, "noisy", "noisy://host");
+
+    // 1. Default (`capture_backend_stdout == false`): stdout goes to /dev/null -> never deadlocks.
+    let mut pipe1 = spec.spawn(&[]).expect("spawn default");
+    assert!(pipe1.take_backend_stdout().is_none());
+    let exit1 = pipe1.wait_all().expect("wait default");
+    assert!(exit1.is_ok());
+
+    // 2. Opted-in (`capture_backend_stdout == true`) where caller calls `wait_all()` without
+    //    draining stdout: `wait_all` closes pipe first -> backend gets SIGPIPE/EPIPE, never hangs.
+    let opts = SpawnOptions {
+        capture_backend_stdout: true,
+        ..SpawnOptions::default()
+    };
+    let pipe2 = spec.spawn_with_options(&[], &opts).expect("spawn captured");
+    let _exit2 = pipe2.wait_all().expect("wait captured without draining");
 }

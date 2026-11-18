@@ -174,29 +174,36 @@ pub fn parse_state_changes(rest: &str) -> Vec<StateChange> {
     out
 }
 
-/// Parse `PAGE:` payload (`total <n>` or `<page> <copies> [extra...]`).
+/// Parse `PAGE:` payload (`total <n>` or `<page> <copies> [extra...]`),
+/// tolerating arbitrary consecutive spaces and tabs between tokens.
 #[must_use]
 pub fn parse_page_event(rest: &str) -> Option<PageEvent> {
     let trimmed = rest.trim();
-    let mut parts = trimmed.splitn(3, char::is_whitespace);
-    let first = parts.next()?.trim();
-    let second = parts.next()?.trim();
+    let (first, after_first) = split_first_token(trimmed)?;
+    let (second, after_second) = split_first_token(after_first.trim_start())?;
     if first.eq_ignore_ascii_case("total") {
         let total = second.parse::<u32>().ok()?;
         return Some(PageEvent::Total(total));
     }
     let page = first.parse::<u32>().ok()?;
     let copies = second.parse::<u32>().ok()?;
-    let extra = parts
-        .next()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string);
+    let extra_trimmed = after_second.trim();
+    let extra = (!extra_trimmed.is_empty()).then(|| extra_trimmed.to_string());
     Some(PageEvent::Sheet {
         page,
         copies,
         extra,
     })
+}
+
+fn split_first_token(s: &str) -> Option<(&str, &str)> {
+    if s.is_empty() {
+        return None;
+    }
+    match s.find(char::is_whitespace) {
+        Some(idx) => Some((&s[..idx], &s[idx..])),
+        None => Some((s, "")),
+    }
 }
 
 /// Parse CUPS `ATTR:` / `PPD:` `key=value` option lists with single/double
