@@ -23,7 +23,7 @@ source tree). Each `.test` file is run with
 | `identify-printer`, `identify-printer-display`, `identify-printer-multiple` | |
 | `ipp-backend` | |
 | `print-job`, `print-job-and-wait`, `print-job-deflate`, `print-job-gzip`, `print-job-hold`, `print-job-letter`, `print-job-manual`, `print-job-media-col`, `print-job-password` | end-to-end through filter→backend; `file` backend writes the document |
-| `print-uri` | `document-uri` (`file://`) fetch |
+| `print-uri` | non-`file://` network `document-uri` via configured fetcher (`file://` rejected fail-closed; see [`docs/deviations.md`](deviations.md)) |
 | `validate-job` | |
 | `create-printer-subscription` | pull (ippget) variant; push variant skips (no `-d recipient`) |
 | `get-ppd`, `get-ppd-printer` | `cups-driverd cat` streams the PPD body; `printer-uri` resolves the driverless `everywhere` PPD |

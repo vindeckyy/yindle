@@ -181,12 +181,11 @@ Override shared data / MIME directory (default:
 Override filter binary directory (default:
 .IR /usr/lib/cups ).
 .TP
-.B PPD
-Default PPD file path when neither
-.B \-p
-nor
-.B \-d
-is specified.
+.B CUPS_REQUESTROOT
+Override spool directory used by
+.B \-j
+(default:
+.IR /var/spool/cups ).
 .TP
 .B TMPDIR
 Directory used for temporary stdin spool files.
