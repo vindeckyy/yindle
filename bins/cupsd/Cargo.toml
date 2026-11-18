@@ -9,22 +9,24 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+authn = { path = "../../crates/authn" }
+authz = { path = "../../crates/authz" }
 cups-config = { path = "../../crates/cups-config" }
+cups-dbus = { path = "../../crates/cups-dbus" }
 cups-log = { path = "../../crates/cups-log" }
+cups-tls = { path = "../../crates/cups-tls" }
+dnssd = { path = "../../crates/dnssd" }
+events = { path = "../../crates/events" }
 httpd = { path = "../../crates/httpd" }
 ipp-codec = { path = "../../crates/ipp-codec" }
 job = { path = "../../crates/job" }
+libc = "0.2"
 mime-db = { path = "../../crates/mime-db" }
-pipeline = { path = "../../crates/pipeline" }
 ops = { path = "../../crates/ops" }
+pipeline = { path = "../../crates/pipeline" }
 printer = { path = "../../crates/printer" }
-tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "signal", "fs", "io-util", "time"] }
+sys = { path = "../../crates/sys", package = "presswork-sys" }
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "signal", "fs", "io-util", "time", "sync", "process"] }
+tokio-rustls = "0.26.6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-authn = { path = "../../crates/authn" }
-cups-tls = { path = "../../crates/cups-tls" }
-tokio-rustls = "0.26.6"
-events = { path = "../../crates/events" }
-dnssd = { path = "../../crates/dnssd" }
-sys = { path = "../../crates/sys", package = "presswork-sys" }
-libc = "0.2"
