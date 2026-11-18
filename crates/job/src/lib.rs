@@ -730,13 +730,28 @@ impl Jobs {
 
     /// Load jobs from a `job.cache` file (applying crash recovery).
     pub fn load_cache(cache_path: &Path, policy: CrashRecoveryPolicy) -> io::Result<Self> {
+        Self::load_cache_with_recovered(cache_path, policy).map(|(jobs, _)| jobs)
+    }
+
+    fn load_cache_with_recovered(
+        cache_path: &Path,
+        policy: CrashRecoveryPolicy,
+    ) -> io::Result<(Self, Vec<i32>)> {
         let f = open_read_nofollow(cache_path)?;
-        Self::decode_cache(BufReader::new(f), policy)
+        Self::decode_cache_with_recovered(BufReader::new(f), policy)
     }
 
     /// Parse `job.cache` from any buffered reader.
     pub fn decode_cache<R: BufRead>(r: R, policy: CrashRecoveryPolicy) -> io::Result<Self> {
+        Self::decode_cache_with_recovered(r, policy).map(|(jobs, _)| jobs)
+    }
+
+    fn decode_cache_with_recovered<R: BufRead>(
+        r: R,
+        policy: CrashRecoveryPolicy,
+    ) -> io::Result<(Self, Vec<i32>)> {
         let mut jobs = Self::default();
+        let mut recovered = Vec::new();
         let mut cur: Option<Job> = None;
         let mut saw_next_id = false;
         let mut max_id = 0i32;
@@ -774,6 +789,12 @@ impl Jobs {
                     .trim()
                     .parse()
                     .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad job id"))?;
+                if id <= 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "job id must be > 0",
+                    ));
+                }
                 let mut job = Job::new(id, "", "anonymous");
                 job.reasons.clear();
                 cur = Some(job);
@@ -783,6 +804,7 @@ impl Jobs {
                 })?;
                 if job.state == JobState::Processing && job.backend_pid.is_none() {
                     recover_job(&mut job, policy);
+                    recovered.push(job.id);
                 }
                 max_id = max_id.max(job.id);
                 jobs.by_id.insert(job.id, job);
@@ -809,7 +831,7 @@ impl Jobs {
             ));
         }
         jobs.next_id = jobs.next_id.max(max_id.saturating_add(1)).max(1);
-        Ok(jobs)
+        Ok((jobs, recovered))
     }
 
     /// Fast-boot loader: loads `cache_path` when it exists, is valid, and is at
@@ -818,12 +840,19 @@ impl Jobs {
     #[must_use]
     pub fn load_with_cache(root: &Path, cache_path: &Path, policy: CrashRecoveryPolicy) -> Self {
         if cache_is_fresh(root, cache_path) {
-            if let Ok(cached) = Self::load_cache(cache_path, policy) {
-                // Persist recovered jobs if crash recovery changed state.
-                for job in cached.by_id.values() {
-                    if job.reasons.iter().any(|r| r == "job-restartable")
-                        || job.state == JobState::Aborted
-                    {
+            if let Ok((mut cached, recovered_ids)) =
+                Self::load_cache_with_recovered(cache_path, policy)
+            {
+                // For jobs actually transitioned from Processing during crash
+                // recovery, reload the full `c<id>` control file when present so
+                // client `job.attrs` are preserved before saving recovered state.
+                for id in recovered_ids {
+                    let cpath = Job::control_path(root, id);
+                    if let Ok(mut full) = Job::load(&cpath) {
+                        recover_job(&mut full, policy);
+                        let _ = full.save(root);
+                        cached.by_id.insert(id, full);
+                    } else if let Some(job) = cached.by_id.get(&id) {
                         let _ = job.save(root);
                     }
                 }
@@ -1549,6 +1578,11 @@ mod tests {
         j1.completed_at = Some(1_700_000_099);
         j1.hold_until = Some("night".into());
         j1.options.insert("copies".into(), "2".into());
+        j1.attrs.push(Attribute::new(
+            "media-source",
+            tags::KEYWORD,
+            vec![Value::Keyword(Text::from("tray-2"))],
+        ));
         j1.files.push(JobFile {
             num: 1,
             filetype: "application/pdf".into(),
@@ -1557,6 +1591,19 @@ mod tests {
             format: "application/pdf".into(),
         });
         jobs.add(&dir, j1).unwrap();
+
+        // Pre-existing Aborted job with custom attrs must NOT be rewritten on load_with_cache.
+        let mut j2 = Job::new(100_006, "p1", "carol");
+        j2.state = JobState::Aborted;
+        j2.attrs.push(Attribute::new(
+            "output-bin",
+            tags::KEYWORD,
+            vec![Value::Keyword(Text::from("top"))],
+        ));
+        jobs.add(&dir, j2).unwrap();
+        let aborted_cpath = Job::control_path(&dir, 100_006);
+        let aborted_bytes_before = fs::read(&aborted_cpath).unwrap();
+
         jobs.save_cache(&cache_path).unwrap();
 
         #[cfg(unix)]
@@ -1565,9 +1612,9 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
 
-        // Fast-boot via cache recovers Processing -> Pending and preserves all metadata.
+        // Fast-boot via cache recovers Processing -> Pending and preserves all metadata & job.attrs!
         let loaded = Jobs::load_with_cache(&dir, &cache_path, CrashRecoveryPolicy::Requeue);
-        assert_eq!(loaded.next_id(), 100_006);
+        assert_eq!(loaded.next_id(), 100_007);
         let lj = loaded.get(100_005).unwrap();
         assert_eq!(lj.state, JobState::Pending);
         assert_eq!(lj.username, "alice\\bob");
@@ -1577,6 +1624,16 @@ mod tests {
         assert_eq!(lj.files.len(), 1);
         assert_eq!(lj.files[0].name, "my\tfile.pdf");
         assert_eq!(lj.files[0].size, 2048);
+        assert!(
+            lj.attrs.iter().any(|a| a.name == "media-source"),
+            "job.attrs must survive load_with_cache crash recovery"
+        );
+        // Verify on-disk c100005 also kept media-source and updated state to Pending.
+        let disk_j1 = Job::load(&Job::control_path(&dir, 100_005)).unwrap();
+        assert_eq!(disk_j1.state, JobState::Pending);
+        assert!(disk_j1.attrs.iter().any(|a| a.name == "media-source"));
+        // Verify pre-existing Aborted job control file was untouched (exact bytes & output-bin kept).
+        assert_eq!(fs::read(&aborted_cpath).unwrap(), aborted_bytes_before);
 
         // Corrupt cache falls back cleanly to scanning c* files.
         fs::write(&cache_path, b"not valid cache\n").unwrap();
@@ -1588,10 +1645,12 @@ mod tests {
         let fallback2 = Jobs::load_with_cache(&dir, &cache_path, CrashRecoveryPolicy::Requeue);
         assert!(fallback2.get(100_005).is_some());
 
-        // Exercise invalid cache parse branches.
+        // Exercise invalid cache parse branches (including id <= 0).
         for bad in [
             "NextJobId 0\n",
             "NextJobId nope\n",
+            "<Job 0>\n</Job>\n",
+            "<Job -5>\n</Job>\n",
             "<Job 1>\n<Job 2>\n</Job>\n",
             "<Job 1\n</Job>\n",
             "<Job abc>\n</Job>\n",

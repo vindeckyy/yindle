@@ -560,7 +560,8 @@ fn parse_rule(t: &str) -> Option<Rule> {
     }
     if let Some(open) = t.find('(') {
         let name = &t[..open];
-        let argstr = t[open + 1..].trim_end_matches(')');
+        let rest = &t[open + 1..];
+        let argstr = rest.strip_suffix(')').unwrap_or(rest);
         let mut parts = argstr.splitn(2, ',');
         let arg1 = parts.next().unwrap_or("").trim();
         let arg2 = parts.next().unwrap_or("").trim();

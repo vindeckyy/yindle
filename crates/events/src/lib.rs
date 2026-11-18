@@ -620,11 +620,15 @@ impl Subscriptions {
         self.renew_with_duration(id, None).is_some()
     }
 
-    /// Renew a subscription's lease, optionally updating `notify-lease-duration`
-    /// (clamped to configured lease limits). Returns the effective duration.
+    /// Renew a live subscription's lease, optionally updating
+    /// `notify-lease-duration` (clamped to configured lease limits).
+    /// Returns `None` if the subscription is missing or already expired.
     pub fn renew_with_duration(&mut self, id: i32, requested: Option<i32>) -> Option<i32> {
         let clamped = requested.map(|r| self.clamp_lease_duration(r));
         let s = self.subs.get_mut(&id)?;
+        if s.expired() {
+            return None;
+        }
         if let Some(d) = clamped {
             s.lease_duration = d;
         }
@@ -1297,9 +1301,11 @@ mod tests {
         assert_eq!(t.find(s_ok).unwrap().lease, i64::MAX);
         assert!(!t.renew(9999));
 
-        // Expired subscription filtered on find and reaped on expire.
+        // Expired subscription filtered on find, rejected on renew, and reaped on expire.
         t.find_mut(s_big).unwrap().lease = now() - 10;
         assert!(t.find(s_big).is_none());
+        assert!(!t.renew(s_big));
+        assert_eq!(t.renew_with_duration(s_big, Some(300)), None);
         t.expire();
         assert_eq!(t.count(), 2);
         assert!(t.remove(s_neg).is_some());

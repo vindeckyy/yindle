@@ -109,7 +109,7 @@ impl Parser<'_> {
     fn parse_seq(&mut self, depth: usize) -> Option<Ast> {
         let mut items = Vec::new();
         while let Some(c) = self.peek() {
-            if c == ')' || c == '|' {
+            if (c == ')' && depth > 0) || c == '|' {
                 break;
             }
             let mut atom = match self.parse_atom(depth) {

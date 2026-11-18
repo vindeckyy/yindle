@@ -101,7 +101,7 @@ pub enum ValidationError {
 /// Validate a CUPS printer or class queue name.
 ///
 /// Rejects empty strings, lengths > 127 bytes, `.` / `..` traversal,
-/// `/`, `\`, `#`, `?`, whitespace, and control characters.
+/// `/`, `\`, `#`, `?`, `<`, `>`, whitespace, and control characters.
 ///
 /// # Errors
 /// Returns a [`ValidationError`] describing why `name` is invalid.
@@ -116,7 +116,7 @@ pub fn validate_printer_name(name: &str) -> Result<(), ValidationError> {
         return Err(ValidationError::NamePathTraversal);
     }
     for c in name.chars() {
-        if matches!(c, '/' | '\\' | '#' | '?') || c.is_whitespace() || c.is_control() {
+        if matches!(c, '/' | '\\' | '#' | '?' | '<' | '>') || c.is_whitespace() || c.is_control() {
             return Err(ValidationError::InvalidNameChar(c));
         }
     }
@@ -635,9 +635,9 @@ impl Registry {
                 self.next_printer_id = 1;
             }
             p.printer_id = self.next_printer_id;
-            self.next_printer_id += 1;
+            self.next_printer_id = self.next_printer_id.saturating_add(1);
         } else if p.printer_id >= self.next_printer_id {
-            self.next_printer_id = p.printer_id + 1;
+            self.next_printer_id = p.printer_id.saturating_add(1);
         }
         self.printers.insert(p.name.clone(), p);
     }
@@ -722,9 +722,9 @@ impl Registry {
                             self.next_printer_id = 1;
                         }
                         p.printer_id = self.next_printer_id;
-                        self.next_printer_id += 1;
+                        self.next_printer_id = self.next_printer_id.saturating_add(1);
                     } else if p.printer_id >= self.next_printer_id {
-                        self.next_printer_id = p.printer_id + 1;
+                        self.next_printer_id = p.printer_id.saturating_add(1);
                     }
                     if is_default_block {
                         self.default = Some(p.name.clone());
@@ -1402,7 +1402,8 @@ mod tests {
             Err(ValidationError::NamePathTraversal)
         );
         for bad in [
-            "a/b", "a\\b", "a#b", "a?b", "a b", "a\tb", "a\nb", "a\rb", "a\x00b", "a\x1fb",
+            "a/b", "a\\b", "a#b", "a?b", "a<b", "a>b", "a b", "a\tb", "a\nb", "a\rb", "a\x00b",
+            "a\x1fb",
         ] {
             assert!(
                 matches!(
@@ -1799,6 +1800,20 @@ Printer dp1
         reg.save_printers_file(&dir.join("printers.conf")).unwrap();
         reg.save_classes_file(&dir.join("classes.conf")).unwrap();
         let _ = fs::remove_dir_all(&dir);
+
+        // PrinterId i32::MAX must saturate cleanly without overflow/panic.
+        let max_conf =
+            "<Printer maxp>\nPrinterId 2147483647\nDeviceURI socket://192.0.2.5:9100\n</Printer>\n";
+        let mut reg_max = Registry::default();
+        assert_eq!(
+            reg_max.load_printers_conf(io::Cursor::new(max_conf.as_bytes())),
+            Vec::<String>::new()
+        );
+        assert_eq!(reg_max.next_printer_id, i32::MAX);
+        let mut p_explicit = Printer::new("p_max2", "socket://192.0.2.6:9100");
+        p_explicit.printer_id = i32::MAX;
+        reg_max.add(p_explicit);
+        assert_eq!(reg_max.next_printer_id, i32::MAX);
     }
 
     #[cfg(unix)]

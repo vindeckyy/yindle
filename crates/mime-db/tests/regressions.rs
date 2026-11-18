@@ -281,6 +281,9 @@ fn regex_groups_alternation_quantifiers_and_leading_newlines() {
 
     let rules = "\
 test/group regex(0,\"^(foo|bar)+baz$\")
+test/unquoted_rx regex(0,^(alpha|beta))
+test/unquoted_str string(0,(abc))
+test/stray_rparen regex(0,\"^foo)bar$\")
 test/opt regex(0,\"^colou?r\\.txt$\")
 test/unanch regex(2,\"[0-9]+-[a-z][^0-9]\")
 test/any regex(0,\"^a.c(d|)e\\tf$\")
@@ -301,6 +304,29 @@ test/huge_star regex(0,\"(a){HUGE}*\")
     assert!(custom.detect("x", b"baz").is_none());
     assert!(custom.detect("x", b"quxbaz").is_none());
     assert!(custom.detect("x", b"foobarbazextra").is_none());
+
+    // Unquoted rules ending in `)` preserve the inner `)`.
+    assert_eq!(
+        custom.detect("x", b"alpha").unwrap().name(),
+        "test/unquoted_rx"
+    );
+    assert_eq!(
+        custom.detect("x", b"beta").unwrap().name(),
+        "test/unquoted_rx"
+    );
+    assert!(custom.detect("x", b"gamma").is_none());
+    assert_eq!(
+        custom.detect("x", b"(abc)").unwrap().name(),
+        "test/unquoted_str"
+    );
+    assert!(custom.detect("x", b"(abc").is_none());
+
+    // Stray `)` at depth 0 is matched literally (must not truncate pattern).
+    assert!(custom.detect("x", b"foo").is_none());
+    assert_eq!(
+        custom.detect("x", b"foo)bar").unwrap().name(),
+        "test/stray_rparen"
+    );
 
     // Optional `?` and escaped `\.`
     assert_eq!(custom.detect("x", b"color.txt").unwrap().name(), "test/opt");
