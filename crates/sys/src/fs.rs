@@ -31,8 +31,9 @@ fn fstat_fd(fd: &OwnedFd) -> io::Result<libc::stat> {
 /// Open a regular file with `O_NOFOLLOW | O_CLOEXEC`.
 ///
 /// Rejects symlinks (`ELOOP`) and non-regular files (e.g. FIFOs, devices,
-/// directories). When `create` is `true`, creates the file with `mode` and
-/// explicitly enforces `fchmod` if newly created.
+/// directories). When `create` is `true`, passes `mode` to `open(2)` (subject
+/// to process umask); use [`atomic_write_secure`] when exact umask-independent
+/// permissions are required.
 pub fn open_nofollow(path: &Path, write: bool, create: bool, mode: u32) -> io::Result<File> {
     let c_path = path_to_cstring(path)?;
     let mut flags = libc::O_NOFOLLOW | libc::O_CLOEXEC;

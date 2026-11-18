@@ -261,14 +261,20 @@ pub(crate) unsafe extern "C" fn pam_conv_cb(
     PAM_SUCCESS
 }
 
-/// Free a partially populated `PamResponse` array allocated with `calloc`/`malloc`.
+/// Zeroize and free a partially populated `PamResponse` array allocated with `calloc`/`malloc`.
 pub(crate) unsafe fn free_responses(arr: *mut PamResponse, populated: usize) {
     for i in 0..populated {
         // SAFETY: `arr` has at least `populated` entries allocated via `calloc`.
         let resp_ptr = unsafe { (*arr.add(i)).resp };
         if !resp_ptr.is_null() {
-            // SAFETY: `resp_ptr` was allocated with `libc::malloc`.
-            unsafe { libc::free(resp_ptr.cast::<libc::c_void>()) };
+            // SAFETY: `resp_ptr` is a NUL-terminated C string allocated via `libc::malloc`.
+            unsafe {
+                let len = libc::strlen(resp_ptr);
+                if len > 0 {
+                    zeroize_bytes(std::slice::from_raw_parts_mut(resp_ptr.cast::<u8>(), len));
+                }
+                libc::free(resp_ptr.cast::<libc::c_void>());
+            }
         }
     }
     // SAFETY: `arr` was allocated with `libc::calloc`.

@@ -73,30 +73,52 @@ pub fn http_method_bit(method: &str) -> u32 {
     }
 }
 
-/// Normalize a request URI path (strip query/fragment and trailing slash except `"/"`).
-fn normalize_path(path: &str) -> &str {
+/// Canonicalize an HTTP request or `<Location>` path:
+/// - Strips query (`?...`) and fragment (`#...`).
+/// - Requires a leading `/`, rejects interior NUL or `\`.
+/// - Collapses repeated `/` (`//admin` -> `/admin`) and removes `.` segments (`/./admin` -> `/admin`).
+/// - Rejects any `..` traversal segment (`None`), ensuring callers fail closed.
+fn canonicalize_path(path: &str) -> Option<String> {
     let without_query = path.split_once(['?', '#']).map_or(path, |(p, _)| p);
-    if without_query.len() > 1 {
-        without_query.trim_end_matches('/')
+    if !without_query.starts_with('/')
+        || without_query.contains('\0')
+        || without_query.contains('\\')
+    {
+        return None;
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in without_query.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." {
+            return None;
+        }
+        parts.push(seg);
+    }
+    if parts.is_empty() {
+        Some("/".to_string())
     } else {
-        without_query
+        let mut out = String::with_capacity(without_query.len());
+        for seg in parts {
+            out.push('/');
+            out.push_str(seg);
+        }
+        Some(out)
     }
 }
 
-/// True if `req_path` (normalized) matches `loc_path` on a path-segment boundary.
+/// True if canonicalized `req_path` matches `loc_path` on a path-segment boundary.
 /// Returns the matched prefix length for longest-prefix selection.
 fn location_path_match_len(loc_path: &str, req_path: &str) -> Option<usize> {
-    if !req_path.starts_with('/') {
-        return None;
-    }
-    let lp = normalize_path(loc_path);
+    let lp = canonicalize_path(loc_path)?;
     if lp == "/" {
         return Some(1);
     }
     if req_path == lp {
         return Some(lp.len());
     }
-    if req_path.starts_with(lp) && req_path.as_bytes().get(lp.len()) == Some(&b'/') {
+    if req_path.starts_with(&lp) && req_path.as_bytes().get(lp.len()) == Some(&b'/') {
         return Some(lp.len());
     }
     None
@@ -104,8 +126,9 @@ fn location_path_match_len(loc_path: &str, req_path: &str) -> Option<usize> {
 
 /// Find the most specific `<Location>` matching `(path, method_bit)` (port of `cupsdFindBest`).
 ///
-/// Selects the longest matching path prefix whose `limit` bitmask includes `method_bit`.
-/// Ties on path length prefer the narrower method mask (`count_ones()`).
+/// Canonicalizes `path` (collapsing `//` and `/./`) and rejects `..` traversal
+/// segments (`None` -> fail closed). Selects the longest matching path prefix
+/// whose `limit` bitmask includes `method_bit`; ties prefer narrower method masks.
 #[must_use]
 pub fn find_best_location<'a>(
     locations: &'a [Location],
@@ -115,14 +138,14 @@ pub fn find_best_location<'a>(
     if method_bit == 0 {
         return None;
     }
-    let req_path = normalize_path(path);
+    let req_path = canonicalize_path(path)?;
     let mut best: Option<(&Location, usize, u32)> = None;
 
     for loc in locations {
         if (loc.limit & method_bit) == 0 {
             continue;
         }
-        let Some(match_len) = location_path_match_len(&loc.path, req_path) else {
+        let Some(match_len) = location_path_match_len(&loc.path, &req_path) else {
             continue;
         };
         let specificity = loc.limit.count_ones();
@@ -204,7 +227,7 @@ pub fn check_access(loc: &Location, s: &Subject, owner: Option<&str>) -> AccessD
             if host_ok || auth_ok {
                 return AccessDecision::Allowed;
             }
-            if s.user.is_none() && loc.auth_level != AuthLevel::Anon {
+            if s.user.is_none() && (loc.auth_level != AuthLevel::Anon || !loc.names.is_empty()) {
                 AccessDecision::AuthRequired(loc.auth_type)
             } else {
                 AccessDecision::Forbidden
@@ -788,6 +811,58 @@ mod tests {
     }
 
     #[test]
+    fn location_path_normalization_blocks_acl_bypass() {
+        let conf = br"
+<Location />
+  Order allow,deny
+</Location>
+
+<Location /admin>
+  AuthType Default
+  Require user @SYSTEM
+  Encryption Required
+  Order allow,deny
+</Location>
+";
+        let (cfg, diags) = parse_cupsd_conf(&conf[..], "cupsd.conf");
+        assert!(!diags.has_errors());
+        let lo_v4 = local_anon();
+        let sys_groups = vec!["lpadmin".to_string()];
+        let lo_tls_anon = Subject {
+            encrypted: true,
+            system_groups: &sys_groups,
+            ..lo_v4
+        };
+
+        // `//admin`, `/./admin`, `/admin/./jobs` MUST match `/admin` (never fall through to `/`)!
+        assert_eq!(
+            check_location(&cfg.locations, "//admin", "GET", &lo_v4, None),
+            AccessDecision::UpgradeRequired
+        );
+        assert_eq!(
+            check_location(&cfg.locations, "/./admin", "GET", &lo_v4, None),
+            AccessDecision::UpgradeRequired
+        );
+        assert_eq!(
+            check_location(&cfg.locations, "/admin/./jobs", "GET", &lo_tls_anon, None),
+            AccessDecision::AuthRequired(AuthType::Default)
+        );
+        // Dot-dot traversal and backslash paths MUST fail closed (`Forbidden`)!
+        assert_eq!(
+            check_location(&cfg.locations, "/printers/../admin", "GET", &lo_v4, None),
+            AccessDecision::Forbidden
+        );
+        assert_eq!(
+            check_location(&cfg.locations, "/..", "GET", &lo_v4, None),
+            AccessDecision::Forbidden
+        );
+        assert_eq!(
+            check_location(&cfg.locations, "/admin\\conf", "GET", &lo_v4, None),
+            AccessDecision::Forbidden
+        );
+    }
+
+    #[test]
     fn location_satisfy_any_limits_and_methods() {
         let conf = br"
 <Location /admin/conf>
@@ -938,11 +1013,59 @@ mod tests {
             }
         ));
 
-        // AuthLevel::Anon with explicit names still enforces names.
+        // AuthLevel::Anon with explicit names still enforces names (including under Satisfy::Any).
         let mut anon_named = Location::new("/an");
         anon_named.auth_level = AuthLevel::Anon;
         anon_named.names.push("alice".into());
         assert!(!permitted(&anon_named, &local_anon()));
         assert!(permitted(&anon_named, &authed));
+        anon_named.satisfy = Satisfy::Any;
+        anon_named.deny.push(HostMask::All);
+        assert_eq!(
+            check_access(&anon_named, &local_anon(), None),
+            AccessDecision::AuthRequired(AuthType::Default)
+        );
+
+        // Mixed `Require group` + `Require user` in BOTH directive orders!
+        for conf in [
+            b"<Location /m>\nAuthType Basic\nRequire group printops\nRequire user alice\nOrder deny,allow\n</Location>\n".as_slice(),
+            b"<Location /m>\nAuthType Basic\nRequire user alice\nRequire group printops\nOrder deny,allow\n</Location>\n".as_slice(),
+        ] {
+            let (cfg, diags) = parse_cupsd_conf(conf, "cupsd.conf");
+            assert!(!diags.has_errors());
+            let mloc = &cfg.locations[0];
+            assert_eq!(mloc.auth_level, AuthLevel::User);
+            // User `alice` allowed without group membership
+            assert!(permitted(mloc, &authed));
+            // Member of group `printops` allowed
+            let ops_groups = vec!["printops".to_string()];
+            assert!(permitted(
+                mloc,
+                &Subject {
+                    user: Some("carol"),
+                    groups: &ops_groups,
+                    ..local_anon()
+                }
+            ));
+            // User literally named `printops` NOT in group `printops` MUST BE DENIED
+            assert!(!permitted(
+                mloc,
+                &Subject {
+                    user: Some("printops"),
+                    groups: &[],
+                    ..local_anon()
+                }
+            ));
+            // User `bob` in group `alice` MUST BE DENIED (alice is a user, not a group)
+            let alice_group = vec!["alice".to_string()];
+            assert!(!permitted(
+                mloc,
+                &Subject {
+                    user: Some("bob"),
+                    groups: &alice_group,
+                    ..local_anon()
+                }
+            ));
+        }
     }
 }

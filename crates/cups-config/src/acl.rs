@@ -243,7 +243,17 @@ pub fn parse_aaa<D: Diag>(
                 );
                 return AaaResult::Error;
             }
-            if matches!(loc.auth_level, AuthLevel::Anon | AuthLevel::ValidUser) {
+            if loc.auth_level == AuthLevel::Group {
+                // Convert previously collected `Require group` names to `@group`
+                // tokens before switching to `AuthLevel::User` so group names
+                // never match usernames and user names never match groups.
+                for existing in &mut loc.names {
+                    if !existing.starts_with('@') {
+                        existing.insert(0, '@');
+                    }
+                }
+                loc.auth_level = AuthLevel::User;
+            } else if matches!(loc.auth_level, AuthLevel::Anon | AuthLevel::ValidUser) {
                 loc.auth_level = AuthLevel::User;
             }
             for w in words {
@@ -1075,6 +1085,13 @@ mod tests {
             AaaResult::Ok
         ));
         assert_eq!(l3.names, vec!["wheel", "lpadmin"]);
+        // Mixing `Require user` after `Require group` converts existing groups to `@group`.
+        assert!(matches!(
+            parse_aaa(&mut l3, &line("Require", Some("user alice")), &mut d, "f"),
+            AaaResult::Ok
+        ));
+        assert_eq!(l3.auth_level, AuthLevel::User);
+        assert_eq!(l3.names, vec!["@wheel", "@lpadmin", "alice"]);
         assert!(matches!(
             parse_aaa(&mut l3, &line("Require", Some("bogus foo")), &mut d, "f"),
             AaaResult::Error
