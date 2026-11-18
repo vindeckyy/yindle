@@ -144,7 +144,8 @@ impl RunningDaemon {
             }
         }
 
-        // Reload TLS certificates & SSLOptions atomically (rollback on error).
+        // Reload TLS certificates & SSLOptions atomically (rollback on error); if TLS was
+        // disabled at startup, attempt initialization so newly deployed certs take effect.
         let ssl_dir = crate::server::effective_ssl_dir(&new_cfg, &new_server_root);
         if let Some(tls_handle) = self.state.current_tls() {
             match build_tls_config(&new_cfg.cupsd.tls_options, &ssl_dir)
@@ -162,6 +163,12 @@ impl RunningDaemon {
                     );
                 }
             }
+        } else if let Ok(Some(handle)) = init_tls(&new_cfg, &new_server_root, &self.state.log) {
+            *self
+                .state
+                .tls
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
         }
 
         // Reopen log files & update Logger thresholds.

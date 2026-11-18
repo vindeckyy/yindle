@@ -1249,10 +1249,13 @@ pub async fn dispatch_http_request(
             if static_resp.status == StatusCode::NOT_FOUND {
                 web::render_builtin_ui(
                     &req.uri,
+                    &cfg,
                     &state.registry,
                     &state.jobs,
                     &state.metrics,
                     &server_name,
+                    auth_user.as_deref(),
+                    &auth_groups,
                 )
                 .unwrap_or(static_resp)
             } else {

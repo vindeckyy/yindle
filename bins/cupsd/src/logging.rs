@@ -94,7 +94,10 @@ pub const fn map_pipeline_severity(sev: LogSeverity) -> Level {
 /// Build a file or stderr [`Sink`] honoring `LogFilePerm` and `MaxLogSize`.
 fn build_sink(path: Option<&str>, perm: u32, max_size: u64, default_stderr: bool) -> Option<Sink> {
     match path {
-        Some(p) if p.eq_ignore_ascii_case("stderr") => Some(Sink::stderr()),
+        // `syslog` maps to stderr (captured by journald) — never a literal `./syslog` file.
+        Some(p) if p.eq_ignore_ascii_case("stderr") || p.eq_ignore_ascii_case("syslog") => {
+            Some(Sink::stderr())
+        }
         Some(p) if p.eq_ignore_ascii_case("none") || p.is_empty() => None,
         Some(p) => {
             if let Some(parent) = Path::new(p).parent() {
@@ -110,7 +113,11 @@ fn build_sink(path: Option<&str>, perm: u32, max_size: u64, default_stderr: bool
 /// Derive a sibling `audit_log` path alongside `error_log` when file-backed.
 fn derive_audit_path(error_log: Option<&str>) -> Option<PathBuf> {
     let raw = error_log?;
-    if raw.is_empty() || raw.eq_ignore_ascii_case("stderr") || raw.eq_ignore_ascii_case("syslog") {
+    if raw.is_empty()
+        || raw.eq_ignore_ascii_case("stderr")
+        || raw.eq_ignore_ascii_case("syslog")
+        || raw.eq_ignore_ascii_case("none")
+    {
         return None;
     }
     let p = Path::new(raw);
@@ -136,13 +143,26 @@ pub fn build_logger(cfg: &Config, format: LogFormat) -> Logger {
     let audit = derive_audit_path(cfg.files.error_log.as_deref())
         .map(|p| Sink::file_with_options(p, perm, max_size));
 
+    // `ErrorLog none` / `AccessLog none` disable that log entirely.
+    let is_none = |v: Option<&str>| v.is_some_and(|p| p.eq_ignore_ascii_case("none"));
+    let error_level = if is_none(cfg.files.error_log.as_deref()) {
+        LogLevelFilter::None
+    } else {
+        map_log_level(cfg.cupsd.log_level)
+    };
+    let access_level = if is_none(cfg.files.access_log.as_deref()) {
+        AccessLogLevel::None
+    } else {
+        map_access_level(cfg.cupsd.access_log_level)
+    };
+
     Logger {
         error,
         access,
         page,
         audit,
-        error_level: map_log_level(cfg.cupsd.log_level),
-        access_level: map_access_level(cfg.cupsd.access_log_level),
+        error_level,
+        access_level,
         time_format,
         format,
     }
@@ -587,5 +607,35 @@ mod tests {
                 },
             );
         }
+    }
+
+    #[test]
+    fn syslog_maps_to_stderr_and_none_disables_logs() {
+        let dir = tmp_dir("syslog");
+        let prev = std::env::current_dir().unwrap();
+        let mut cfg = Config {
+            cupsd: cups_config::CupsdConfig::defaults(),
+            files: cups_config::CupsFilesConfig::defaults(),
+        };
+        cfg.files.error_log = Some("syslog".into());
+        cfg.files.access_log = Some("SysLog".into());
+        cfg.files.page_log = Some("syslog".into());
+        let logger = build_logger(&cfg, LogFormat::Text);
+        assert!(logger.page.is_some());
+        assert!(logger.audit.is_none());
+        assert_ne!(logger.error_level, LogLevelFilter::None);
+        // No literal `syslog` file is ever created relative to the CWD.
+        assert!(!prev.join("syslog").exists());
+        assert!(!dir.join("syslog").exists());
+
+        cfg.files.error_log = Some("none".into());
+        cfg.files.access_log = Some("None".into());
+        cfg.files.page_log = Some("none".into());
+        let off = build_logger(&cfg, LogFormat::Text);
+        assert_eq!(off.error_level, LogLevelFilter::None);
+        assert_eq!(off.access_level, AccessLogLevel::None);
+        assert!(off.page.is_none());
+        assert!(off.audit.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

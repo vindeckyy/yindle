@@ -11,6 +11,7 @@
 //!   write and bounded stdout read, eliminating >64 KiB pipe deadlocks.
 //! - Canonicalizes and validates CGI executables inside `{ServerBin}/cgi-bin`.
 
+use std::io;
 use std::net::IpAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,10 @@ use std::time::Duration;
 
 use cups_config::Config;
 use httpd::{Method, Request, Response, StatusCode};
+use pipeline::{
+    build_cups_exec_args, current_euid_egid, resolve_trusted_executable, sandbox_profile_name,
+    validate_stage_privilege_drop, SecurityPolicy, SpawnOptions,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
@@ -216,6 +221,79 @@ fn sanitize_env(val: &str) -> String {
         .collect()
 }
 
+/// Prepare the `(program, args)` launch tuple for a CGI binary, enforcing strict
+/// executable checks and mandatory `cups-exec` privilege drop whenever `eff_uid == 0`.
+///
+/// - When `eff_uid == 0`: verifies the CGI binary under `policy` (root-owned,
+///   non-group/world-writable in production via [`SecurityPolicy::strict`]),
+///   refuses to execute as target `uid == 0`, resolves & verifies `cups-exec`,
+///   and returns `(cups_exec, build_cups_exec_args(...))`.
+/// - When `eff_uid != 0`: validates the CGI binary inside `{ServerBin}/cgi-bin`
+///   and returns direct execution `(bin, [])`.
+pub fn build_cgi_command_for_ids(
+    server_bin: &Path,
+    script: &str,
+    cfg: &Config,
+    eff_uid: u32,
+    policy: &SecurityPolicy,
+) -> io::Result<(PathBuf, Vec<String>)> {
+    if eff_uid == 0 {
+        let bin = resolve_trusted_executable(&cgi_root(server_bin), script, policy)?;
+        let opts = SpawnOptions::from_cups_config(cfg);
+        let target_uid = opts.sandbox.uid.unwrap_or(0);
+        if target_uid == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "refusing to execute CGI binary as uid 0 (root)",
+            ));
+        }
+
+        let exec_candidate = server_bin.join("daemon").join("cups-exec");
+        let exec_parent = exec_candidate.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "cups-exec path has no parent directory",
+            )
+        })?;
+        let exec_name = exec_candidate
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "invalid cups-exec filename",
+                )
+            })?;
+        let cups_exec =
+            resolve_trusted_executable(exec_parent, exec_name, policy).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("root CGI privilege drop requires trusted cups-exec: {e}"),
+                )
+            })?;
+
+        validate_stage_privilege_drop(0, false, &opts.sandbox, true)?;
+
+        let profile = sandbox_profile_name(opts.sandbox.mode, false);
+        let group_id = opts.sandbox.gid.unwrap_or(cfg.files.group);
+        let bin_str = bin.to_string_lossy();
+        let args = build_cups_exec_args(
+            profile,
+            target_uid,
+            group_id,
+            opts.sandbox.nice,
+            &bin,
+            &bin_str,
+            &[],
+        );
+        return Ok((cups_exec, args));
+    }
+
+    let bin = resolve_cgi_binary(server_bin, script)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "CGI binary not available"))?;
+    Ok((bin, Vec::new()))
+}
+
 /// Run a CGI binary asynchronously with concurrent stdin writing and bounded
 /// stdout reading (eliminating >64 KiB pipe deadlocks).
 pub async fn run_async(
@@ -225,11 +303,23 @@ pub async fn run_async(
     body: &[u8],
     ctx: &CgiContext<'_>,
 ) -> Option<Response> {
-    let bin = resolve_cgi_binary(ctx.server_bin, script)?;
+    let (eff_uid, _) = current_euid_egid();
+    let (program, args) = match build_cgi_command_for_ids(
+        ctx.server_bin,
+        script,
+        ctx.cfg,
+        eff_uid,
+        &SecurityPolicy::strict(),
+    ) {
+        Ok(pair) => pair,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
+        Err(_) => return Some(Response::status(StatusCode::FORBIDDEN).with_security_headers()),
+    };
     let env_vars = build_cgi_env(script, path_info, req, body.len(), ctx);
 
-    let mut cmd = Command::new(&bin);
-    cmd.env_clear()
+    let mut cmd = Command::new(&program);
+    cmd.args(&args)
+        .env_clear()
         .envs(env_vars)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -549,6 +639,105 @@ mod tests {
         let slow_req = make_req(Method::Get, "/jobs");
         let slow_resp = dispatch_async(&slow_req, b"", &short_ctx).await.unwrap();
         assert_eq!(slow_resp.status, StatusCode(504));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn root_cgi_enforces_strict_checks_and_cups_exec_privilege_drop() {
+        let dir = tmp_dir("root_privdrop");
+        let cgidir = dir.join("cgi-bin");
+        let daemondir = dir.join("daemon");
+        std::fs::create_dir_all(&cgidir).unwrap();
+        std::fs::create_dir_all(&daemondir).unwrap();
+
+        let script = cgidir.join("admin.cgi");
+        std::fs::write(&script, "#!/bin/sh\necho ok\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cfg = Config {
+            cupsd: cups_config::CupsdConfig::defaults(),
+            files: cups_config::CupsFilesConfig::defaults(),
+        };
+        cfg.files.server_bin = Some(dir.to_string_lossy().into_owned());
+        cfg.files.user = 631;
+        cfg.files.group = 631;
+
+        // 1. Under `SecurityPolicy::strict()`, non-root-owned or group-writable CGI is rejected!
+        let (cur_uid, _) = current_euid_egid();
+        if cur_uid != 0 {
+            let err =
+                build_cgi_command_for_ids(&dir, "admin.cgi", &cfg, 0, &SecurityPolicy::strict())
+                    .unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        }
+        // Group-writable CGI rejected even under `for_current_process()`!
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o775)).unwrap();
+        let err_gw = build_cgi_command_for_ids(
+            &dir,
+            "admin.cgi",
+            &cfg,
+            0,
+            &SecurityPolicy::for_current_process(),
+        )
+        .unwrap_err();
+        assert_eq!(err_gw.kind(), io::ErrorKind::PermissionDenied);
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // 2. Target uid == 0 is ALWAYS refused when running as root (fail-closed!).
+        let mut root_cfg = cfg.clone();
+        root_cfg.files.user = 0;
+        let err_root = build_cgi_command_for_ids(
+            &dir,
+            "admin.cgi",
+            &root_cfg,
+            0,
+            &SecurityPolicy::for_current_process(),
+        )
+        .unwrap_err();
+        assert_eq!(err_root.kind(), io::ErrorKind::PermissionDenied);
+
+        // 3. Missing `cups-exec` fails closed with PermissionDenied (never executes CGI as root!).
+        let err_no_exec = build_cgi_command_for_ids(
+            &dir,
+            "admin.cgi",
+            &cfg,
+            0,
+            &SecurityPolicy::for_current_process(),
+        )
+        .unwrap_err();
+        assert_eq!(err_no_exec.kind(), io::ErrorKind::PermissionDenied);
+
+        // 4. Missing CGI script returns NotFound (so non-CGI routes can fall through to static/UI).
+        let err_missing = build_cgi_command_for_ids(
+            &dir,
+            "jobs.cgi",
+            &cfg,
+            0,
+            &SecurityPolicy::for_current_process(),
+        )
+        .unwrap_err();
+        assert_eq!(err_missing.kind(), io::ErrorKind::NotFound);
+
+        // 5. With trusted `cups-exec` present, root CGI wraps execution through `cups-exec`!
+        let cups_exec = daemondir.join("cups-exec");
+        std::fs::write(&cups_exec, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&cups_exec, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (prog, args) = build_cgi_command_for_ids(
+            &dir,
+            "admin.cgi",
+            &cfg,
+            0,
+            &SecurityPolicy::for_current_process(),
+        )
+        .unwrap();
+        assert_eq!(prog, std::fs::canonicalize(&cups_exec).unwrap());
+        assert_eq!(args[1], "631");
+        assert_eq!(args[2], "631");
+        assert_eq!(
+            args[4],
+            std::fs::canonicalize(&script).unwrap().to_string_lossy()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

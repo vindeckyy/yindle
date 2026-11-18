@@ -923,6 +923,9 @@ impl Scheduler {
                 Ok(p) => p,
                 Err(e) => return JobExecResult::SpawnError(e.to_string()),
             };
+            // Drop our local sender clone immediately so `rx` observes
+            // `Disconnected` as soon as the pipeline's stderr reader threads finish.
+            doc_opts.status_tx = None;
 
             let backend_pid = i32::try_from(pipe.backend.id()).ok();
             {
@@ -979,7 +982,7 @@ impl Scheduler {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn monitor_pipeline(
         &self,
         pipe: &mut Pipeline,
@@ -998,30 +1001,121 @@ impl Scheduler {
 
             if cancel_flag.load(Ordering::Acquire) {
                 let _ = pipe.kill_job(kill_delay);
-                self.drain_status(rx, job_id, printer_name, username, job_attrs, page_log_fmt);
+                self.drain_status_until_closed(
+                    rx,
+                    job_id,
+                    printer_name,
+                    username,
+                    job_attrs,
+                    page_log_fmt,
+                    Duration::from_millis(500),
+                );
                 return MonitorOutcome::Canceled;
             }
 
             if timeout_flag.load(Ordering::Acquire) {
                 let _ = pipe.kill_job(kill_delay);
-                self.drain_status(rx, job_id, printer_name, username, job_attrs, page_log_fmt);
+                self.drain_status_until_closed(
+                    rx,
+                    job_id,
+                    printer_name,
+                    username,
+                    job_attrs,
+                    page_log_fmt,
+                    Duration::from_millis(500),
+                );
                 return MonitorOutcome::TimedOut;
             }
 
             match pipe.backend.try_wait() {
                 Ok(Some(bstatus)) => {
-                    let mut filter_exits = Vec::with_capacity(pipe.filters.len());
-                    for (i, f) in pipe.filters.iter_mut().enumerate() {
-                        if let Ok(st) = f.wait() {
-                            filter_exits.push(pipeline::FilterExit::from_status(i, f.id(), st));
+                    let mut filter_exits: Vec<Option<pipeline::FilterExit>> =
+                        vec![None; pipe.filters.len()];
+                    let grace =
+                        kill_delay.clamp(Duration::from_millis(100), Duration::from_secs(2));
+                    let grace_deadline = Instant::now() + grace;
+
+                    while filter_exits.iter().any(Option::is_none) {
+                        self.drain_status(
+                            rx,
+                            job_id,
+                            printer_name,
+                            username,
+                            job_attrs,
+                            page_log_fmt,
+                        );
+                        if cancel_flag.load(Ordering::Acquire) {
+                            let _ = pipe.kill_job(kill_delay);
+                            self.drain_status_until_closed(
+                                rx,
+                                job_id,
+                                printer_name,
+                                username,
+                                job_attrs,
+                                page_log_fmt,
+                                Duration::from_millis(500),
+                            );
+                            return MonitorOutcome::Canceled;
                         }
+                        if timeout_flag.load(Ordering::Acquire) {
+                            let _ = pipe.kill_job(kill_delay);
+                            self.drain_status_until_closed(
+                                rx,
+                                job_id,
+                                printer_name,
+                                username,
+                                job_attrs,
+                                page_log_fmt,
+                                Duration::from_millis(500),
+                            );
+                            return MonitorOutcome::TimedOut;
+                        }
+                        for (i, f) in pipe.filters.iter_mut().enumerate() {
+                            if filter_exits[i].is_none() {
+                                if let Ok(Some(st)) = f.try_wait() {
+                                    filter_exits[i] =
+                                        Some(pipeline::FilterExit::from_status(i, f.id(), st));
+                                }
+                            }
+                        }
+                        if filter_exits.iter().all(Option::is_some) {
+                            break;
+                        }
+                        if Instant::now() >= grace_deadline {
+                            self.log.err(
+                                Level::Warn,
+                                format!(
+                                    "[Job {job_id}] Backend exited while filter(s) remained running; terminating filter group."
+                                ),
+                            );
+                            if let Ok(killed) = pipe.kill_job(kill_delay) {
+                                for fe in killed.filters {
+                                    if let Some(slot) = filter_exits.get_mut(fe.index) {
+                                        if slot.is_none() {
+                                            *slot = Some(fe);
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
                     }
-                    // Give stderr reader threads a brief moment to flush final lines.
-                    std::thread::sleep(Duration::from_millis(10));
-                    self.drain_status(rx, job_id, printer_name, username, job_attrs, page_log_fmt);
+
+                    // Drain all remaining stderr StatusMessages until the reader threads
+                    // close the channel (bounded by a short safety deadline).
+                    self.drain_status_until_closed(
+                        rx,
+                        job_id,
+                        printer_name,
+                        username,
+                        job_attrs,
+                        page_log_fmt,
+                        Duration::from_millis(500),
+                    );
                     return MonitorOutcome::Finished(PipelineExit {
                         backend: BackendExit::from_exit_status(bstatus),
-                        filters: filter_exits,
+                        filters: filter_exits.into_iter().flatten().collect(),
                     });
                 }
                 Ok(None) => {
@@ -1044,6 +1138,38 @@ impl Scheduler {
     ) {
         while let Ok(msg) = rx.try_recv() {
             self.apply_status_message(job_id, printer_name, username, job_attrs, page_log_fmt, msg);
+        }
+    }
+
+    /// Drain [`StatusMessage`]s until all stderr reader threads close the channel
+    /// (or `max_wait` elapses).
+    #[allow(clippy::too_many_arguments)]
+    fn drain_status_until_closed(
+        &self,
+        rx: &std::sync::mpsc::Receiver<StatusMessage>,
+        job_id: i32,
+        printer_name: &str,
+        username: &str,
+        job_attrs: &[Attribute],
+        page_log_fmt: &str,
+        max_wait: Duration,
+    ) {
+        let deadline = Instant::now() + max_wait;
+        while let Some(rem) = deadline.checked_duration_since(Instant::now()) {
+            match rx.recv_timeout(rem) {
+                Ok(msg) => self.apply_status_message(
+                    job_id,
+                    printer_name,
+                    username,
+                    job_attrs,
+                    page_log_fmt,
+                    msg,
+                ),
+                Err(
+                    std::sync::mpsc::RecvTimeoutError::Disconnected
+                    | std::sync::mpsc::RecvTimeoutError::Timeout,
+                ) => break,
+            }
         }
     }
 
@@ -3782,6 +3908,79 @@ mod tests {
         assert!(!is_upg_group_writable(&ww_filter, uid, gid));
         assert!(is_world_writable(&ww_filter));
         assert!(!is_world_writable(&h.bin.join("nope")));
+        let _ = std::fs::remove_dir_all(&h.base);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn early_exiting_backend_terminates_stuck_filter_and_drains_final_status() {
+        let h = setup_harness("stuck_flt", 200, "abort-job");
+
+        // Filter ignores SIGPIPE and sleeps 60s so a blocking `f.wait()` would hang forever!
+        let stuck_filter = h.bin.join("filter").join("passthru");
+        make_script(
+            &stuck_filter,
+            "#!/bin/sh\ntrap '' PIPE\necho 'INFO: filter running' >&2\nsleep 60\n",
+        );
+
+        // Backend emits final PAGE/INFO lines and exits immediately with CUPS_BACKEND_CANCEL (5).
+        let fast_be = h.bin.join("backend").join("fastfail");
+        make_script(
+            &fast_be,
+            "#!/bin/sh\necho 'PAGE: 1 2' >&2\necho 'INFO: backend exited early' >&2\nexit 5\n",
+        );
+
+        {
+            let mut reg = h.registry.write().unwrap();
+            let mut p = Printer::new("qstuck", "fastfail://dev");
+            p.state = pstate::IDLE;
+            p.accepting = true;
+            reg.add(p);
+        }
+        let jid = add_job(&h, "qstuck", &[("text/plain", b"hello\n")]);
+
+        let started = Instant::now();
+        h.sched.dispatch_pending();
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while Instant::now() < deadline {
+            if h.jobs
+                .read()
+                .unwrap()
+                .get(jid)
+                .is_some_and(|j| j.state == JobState::Canceled)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            h.jobs.read().unwrap().get(jid).unwrap().state,
+            JobState::Canceled
+        );
+        // Must complete rapidly without hanging on the 60s sleeping filter!
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // FilterCostGuard must be released and printer returned to Idle!
+        assert_eq!(h.metrics.filter_cost_current(), 0);
+        assert_eq!(
+            h.registry.read().unwrap().find("qstuck").unwrap().state,
+            pstate::IDLE
+        );
+        // Trailing stderr PAGE/INFO lines written just before backend exit were not dropped!
+        let sheets = h
+            .jobs
+            .read()
+            .unwrap()
+            .get(jid)
+            .unwrap()
+            .attrs
+            .iter()
+            .find(|a| a.name.as_str() == "job-impressions-completed")
+            .and_then(|a| a.values.first())
+            .and_then(|v| match v {
+                Value::Integer(n) => Some(*n),
+                _ => None,
+            });
+        assert_eq!(sheets, Some(2));
+
         let _ = std::fs::remove_dir_all(&h.base);
     }
 }
