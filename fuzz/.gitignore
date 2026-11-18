@@ -1,2 +1,8 @@
 target/
 artifacts/
+coverage/
+*.profraw
+/crash-*
+/oom-*
+/timeout-*
+/slow-unit-*

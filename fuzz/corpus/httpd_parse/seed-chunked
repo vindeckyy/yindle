@@ -1,0 +1,9 @@
+POST /printers/laser HTTP/1.1
+Host: print.example.com:631
+Transfer-Encoding: chunked
+
+5
+hello
+0
+X-Trailer: ok
+

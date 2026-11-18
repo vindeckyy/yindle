@@ -9,10 +9,15 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+tokio = { version = "1", default-features = false, features = ["io-util", "rt", "time"] }
 ipp-codec = { path = "../crates/ipp-codec" }
 cups-config = { path = "../crates/cups-config" }
 mime-db = { path = "../crates/mime-db" }
 printer = { path = "../crates/printer" }
+httpd = { path = "../crates/httpd" }
+authn = { path = "../crates/authn" }
+backend-common = { path = "../crates/backend-common" }
+dnssd = { path = "../crates/dnssd" }
 
 [[bin]]
 name = "ipp_decode"
@@ -35,6 +40,30 @@ doc = false
 [[bin]]
 name = "printers_conf"
 path = "fuzz_targets/printers_conf.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "httpd_parse"
+path = "fuzz_targets/httpd_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "authn_parse"
+path = "fuzz_targets/authn_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "backend_uri"
+path = "fuzz_targets/backend_uri.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "dnssd_uri"
+path = "fuzz_targets/dnssd_uri.rs"
 test = false
 doc = false
 

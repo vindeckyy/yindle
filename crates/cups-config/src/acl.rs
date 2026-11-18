@@ -126,9 +126,9 @@ pub fn parse_aaa<D: Diag>(
             return AaaResult::Error;
         }
     } else if eq(name, "Order") {
-        if value.len() >= 4 && value[..4].eq_ignore_ascii_case("deny") {
+        if value.len() >= 4 && value.as_bytes()[..4].eq_ignore_ascii_case(b"deny") {
             loc.order = OrderType::Allow; // deny evaluated first → allow wins
-        } else if value.len() >= 5 && value[..5].eq_ignore_ascii_case("allow") {
+        } else if value.len() >= 5 && value.as_bytes()[..5].eq_ignore_ascii_case(b"allow") {
             loc.order = OrderType::Deny; // allow evaluated first → deny wins
         } else {
             diags.log(
@@ -488,7 +488,7 @@ fn extract_if_name(token: &str) -> Option<&str> {
     if token.len() < 6 {
         return None;
     }
-    if token[..4].eq_ignore_ascii_case("@IF(") && token.ends_with(')') {
+    if token.as_bytes()[..4].eq_ignore_ascii_case(b"@IF(") && token.ends_with(')') {
         let inner = &token[4..token.len() - 1];
         if !inner.is_empty() {
             return Some(inner);
@@ -1115,6 +1115,34 @@ mod tests {
         assert!(matches!(
             parse_aaa(&mut l3, &line("NoSuchDir", Some("x")), &mut d, "f"),
             AaaResult::Unknown
+        ));
+    }
+
+    #[test]
+    fn order_and_if_multibyte_utf8_no_panic() {
+        let mut d = VecDiag::default();
+        let mut l = Location::new("/");
+        // Multi-byte UTF-8 straddling byte index 4 and byte index 5 in Order directive.
+        assert!(matches!(
+            parse_aaa(&mut l, &line("Order", Some("abc\u{00e9}")), &mut d, "f"),
+            AaaResult::Error
+        ));
+        assert!(matches!(
+            parse_aaa(&mut l, &line("Order", Some("abcd\u{00e9}")), &mut d, "f"),
+            AaaResult::Error
+        ));
+        // Multi-byte UTF-8 straddling byte index 4 in @IF(...) interface syntax.
+        assert_eq!(extract_if_name("abc\u{00e9})"), None);
+        assert_eq!(extract_if_name("\u{00e9}\u{00e9}\u{00e9})"), None);
+        assert_eq!(extract_if_name("@IF(eth0)"), Some("eth0"));
+        assert!(matches!(
+            parse_aaa(
+                &mut l,
+                &line("Allow", Some("from abc\u{00e9})")),
+                &mut d,
+                "f"
+            ),
+            AaaResult::Ok
         ));
     }
 }
