@@ -9,4 +9,6 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+cups-config = { path = "../cups-config" }
 mime-db = { path = "../mime-db" }
+sys = { path = "../sys", package = "presswork-sys" }
