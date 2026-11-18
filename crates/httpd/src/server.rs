@@ -286,9 +286,9 @@ fn parse_host_header(raw: &str) -> Option<String> {
 fn is_loopback_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
         || host.eq_ignore_ascii_case("localhost.localdomain")
-        || host == "127.0.0.1"
-        || host == "::1"
-        || host == "0:0:0:0:0:0:0:1"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 fn host_pattern_matches(pattern: &str, host: &str) -> bool {
@@ -939,13 +939,17 @@ impl BodySink {
         if self.file.is_none() {
             if let Some(thresh) = self.threshold {
                 if self.mem.len().saturating_add(bytes.len()) > thresh {
-                    let (path, mut f) = create_spool_file(self.spool_dir.as_deref())?;
+                    let (path, f) = create_spool_file(self.spool_dir.as_deref())?;
+                    // Store immediately before awaiting writes so Drop/cleanup always
+                    // removes the temp file on write error or task cancellation.
+                    self.file = Some((path, f));
                     if !self.mem.is_empty() {
-                        f.write_all(&self.mem).await?;
+                        if let Some((_, ref mut file)) = self.file {
+                            file.write_all(&self.mem).await?;
+                        }
                         self.mem.clear();
                         self.mem.shrink_to_fit();
                     }
-                    self.file = Some((path, f));
                 }
             }
         }
@@ -965,18 +969,27 @@ impl BodySink {
     }
 
     async fn finish(mut self, until_eof: bool) -> Result<Body, ServeError> {
-        if let Some((path, mut f)) = self.file.take() {
+        if let Some((_, ref mut f)) = self.file {
             f.flush().await?;
+        }
+        if let Some((path, f)) = self.file.take() {
             drop(f);
             return Ok(Body::Spooled(SpooledBody::new(path, self.total)));
         }
-        if self.mem.is_empty() {
+        let mem = std::mem::take(&mut self.mem);
+        if mem.is_empty() {
             Ok(Body::Empty)
         } else if until_eof {
-            Ok(Body::UntilEof(self.mem))
+            Ok(Body::UntilEof(mem))
         } else {
-            Ok(Body::Bytes(self.mem))
+            Ok(Body::Bytes(mem))
         }
+    }
+}
+
+impl Drop for BodySink {
+    fn drop(&mut self) {
+        self.cleanup();
     }
 }
 
@@ -1610,7 +1623,17 @@ mod tests {
             Some("srv.example"),
             &aliases
         ));
+        assert!(validate_host(
+            "127.0.0.2:631",
+            Some("srv.example"),
+            &aliases
+        ));
         assert!(validate_host("[::1]:631", Some("srv.example"), &aliases));
+        assert!(validate_host(
+            "[0000::1]:631",
+            Some("srv.example"),
+            &aliases
+        ));
         assert!(validate_host("srv.example.", Some("srv.example"), &aliases));
         assert!(validate_host(
             "cups.corp.example:631",
@@ -1935,6 +1958,45 @@ mod tests {
             // Intentionally never read from cli_w so server write blocks past 40ms.
             let out_w = h_w.await.unwrap();
             assert!(matches!(out_w, Err(ServeError::Timeout(_))));
+        });
+    }
+
+    #[test]
+    fn spooled_body_cleaned_up_on_task_cancel() {
+        block_on(async {
+            let dir =
+                std::env::temp_dir().join(format!("presswork-httpd-cancel-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            let cancel_cfg = ServerConfig {
+                max_body: Some(64 * 1024),
+                spool_threshold: Some(16),
+                spool_dir: Some(dir.clone()),
+                ..ServerConfig::default()
+            };
+            let (mut cli_c, mut srv_c) = duplex(4096);
+            let h_c = tokio::spawn(async move {
+                serve_connection_with_config(&mut srv_c, &cancel_cfg, |_| {
+                    Response::status(StatusCode::OK)
+                })
+                .await
+            });
+            cli_c
+                .write_all(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1000\r\n\r\n01234567890123456789012345678901")
+                .await
+                .unwrap();
+            for _ in 0..50 {
+                if std::fs::read_dir(&dir).unwrap().count() > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+            h_c.abort();
+            let _ = h_c.await;
+            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+            let _ = std::fs::remove_dir_all(&dir);
         });
     }
 }

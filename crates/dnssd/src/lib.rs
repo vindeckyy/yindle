@@ -539,10 +539,7 @@ pub fn percent_decode(input: &str) -> String {
 /// Parse a `dnssd://<instance>._ipp(s)._tcp[.local.][/<rp>][?uuid=<id>]` URI.
 #[must_use]
 pub fn parse_dnssd_uri(device_uri: &str) -> Option<ParsedDnssdUri> {
-    if device_uri.len() < 8 || !device_uri[..8].eq_ignore_ascii_case("dnssd://") {
-        return None;
-    }
-    let rest = &device_uri[8..];
+    let rest = strip_prefix_ignore_ascii_case(device_uri, "dnssd://")?;
     let (without_query, query) = match rest.split_once('?') {
         Some((a, q)) => (a, Some(q)),
         None => (rest, None),
@@ -599,16 +596,25 @@ pub fn parse_dnssd_uri(device_uri: &str) -> Option<ParsedDnssdUri> {
 }
 
 fn strip_suffix_ignore_ascii_case<'a>(s: &'a str, suffix: &str) -> Option<&'a str> {
-    if s.len() >= suffix.len() && s[s.len() - suffix.len()..].eq_ignore_ascii_case(suffix) {
-        Some(&s[..s.len() - suffix.len()])
-    } else {
-        None
+    let sb = s.as_bytes();
+    let suf = suffix.as_bytes();
+    if sb.len() >= suf.len() {
+        let split = sb.len() - suf.len();
+        if sb[split..].eq_ignore_ascii_case(suf) && s.is_char_boundary(split) {
+            return Some(&s[..split]);
+        }
     }
+    None
 }
 
 fn strip_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
-        Some(&s[prefix.len()..])
+    let sb = s.as_bytes();
+    let pre = prefix.as_bytes();
+    if sb.len() >= pre.len()
+        && sb[..pre.len()].eq_ignore_ascii_case(pre)
+        && s.is_char_boundary(pre.len())
+    {
+        Some(&s[pre.len()..])
     } else {
         None
     }
@@ -969,6 +975,26 @@ mod tests {
         assert!(parse_dnssd_uri("ipp://localhost/printers/x").is_none());
         assert!(parse_dnssd_uri("dnssd://._ipp._tcp.local.").is_none());
         assert!(parse_dnssd_uri("dnssd://bad._http._tcp.local.").is_none());
+
+        // Multi-byte UTF-8 straddling ASCII slice boundaries must never panic.
+        assert!(parse_dnssd_uri("aéééé://bad").is_none());
+        assert!(parse_dnssd_uri("dnssd://aéééééééé").is_none());
+        let utf8_uri = parse_dnssd_uri(
+            "dnssd://Caf%C3%A9%20%E3%83%97%E3%83%AA%E3%83%B3%E3%82%BF._ipp._tcp.local./?uuid=%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9",
+        )
+        .unwrap();
+        assert_eq!(utf8_uri.instance, "Café プリンタ");
+        assert_eq!(utf8_uri.uuid.as_deref(), Some("ééééé"));
+        assert!(!service_matches(
+            &utf8_uri,
+            "aéééééééééééééééé",
+            Some("aééééééé")
+        ));
+        assert!(service_matches(
+            &utf8_uri,
+            "Café プリンタ._ipp._tcp.local.",
+            Some("ééééé")
+        ));
     }
 
     #[test]

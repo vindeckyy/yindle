@@ -519,7 +519,7 @@ fn select_protocol_versions(
             format!("TLS max version {max:?} is below minimum supported TLS 1.2"),
         ));
     }
-    if min == TlsVersion::V1_3 {
+    if min >= TlsVersion::V1_3 {
         Ok(&ONLY_TLS13)
     } else if max == TlsVersion::V1_2 {
         Ok(&ONLY_TLS12)
@@ -846,9 +846,18 @@ mod tests {
         // Server pinned to MaxTLS1.2 -> TLS 1.2 client succeeds.
         let srv12 = id.build_server_config(&c12).unwrap();
         assert_eq!(
-            run_handshake(srv12, cli12, "localhost").unwrap(),
+            run_handshake(srv12, Arc::clone(&cli12), "localhost").unwrap(),
             rustls::ProtocolVersion::TLSv1_2
         );
+
+        // min_version = Max, max_version = Max -> enforces TLS 1.3 only (rejects TLS 1.2).
+        let c_max = TlsConfig {
+            min_version: TlsVersion::Max,
+            max_version: TlsVersion::Max,
+            ..Default::default()
+        };
+        let srv_max = id.build_server_config(&c_max).unwrap();
+        assert!(run_handshake(srv_max, cli12, "localhost").is_err());
     }
 
     #[test]
