@@ -9,3 +9,4 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+sys = { path = "../../crates/sys", package = "presswork-sys" }
