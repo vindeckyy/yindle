@@ -2,5 +2,31 @@
 Description=CUPS LPD Server
 
 [Service]
+User=lp
+Group=lp
 ExecStart=-/usr/lib/cups/daemon/cups-lpd
 StandardInput=socket
+
+# Hardening: cups-lpd only bridges RFC 1179 input to local IPP over socket/loopback.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+UMask=0077
+MemoryMax=64M
+TasksMax=16

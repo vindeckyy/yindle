@@ -1,0 +1,18 @@
+/var/log/cups/access_log /var/log/cups/error_log /var/log/cups/page_log {
+    su lp lp
+    weekly
+    rotate 12
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 lp lp
+    sharedscripts
+    postrotate
+        if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+            systemctl reload-or-try-restart cups.service >/dev/null 2>&1 || true
+        elif [ -f /run/cups/cupsd.pid ]; then
+            kill -HUP "$(cat /run/cups/cupsd.pid)" 2>/dev/null || true
+        fi
+    endscript
+}

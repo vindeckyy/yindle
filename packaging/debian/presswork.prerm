@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+            systemctl stop cups.path cups.socket cups.service cups-lpd.socket 2>/dev/null || true
+            systemctl disable cups.socket cups.path cups-lpd.socket 2>/dev/null || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

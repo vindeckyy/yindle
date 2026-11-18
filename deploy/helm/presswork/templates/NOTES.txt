@@ -1,0 +1,21 @@
+Presswork has been deployed to namespace "{{ .Release.Namespace }}".
+
+1. Verify pod readiness and health:
+   kubectl -n {{ .Release.Namespace }} rollout status statefulset/{{ include "presswork.fullname" . }}
+
+2. Test IPP and health endpoints locally via port-forward:
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "presswork.fullname" . }} 8631:{{ .Values.service.port }}
+   curl -fsS http://127.0.0.1:8631/healthz
+   curl -fsS http://127.0.0.1:8631/readyz
+   lpstat -h 127.0.0.1:8631 -t
+
+3. Cluster-internal IPP endpoint:
+   ipp://{{ include "presswork.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}/
+
+4. Observability:
+{{- if .Values.serviceMonitor.enabled }}
+   Prometheus ServiceMonitor is ENABLED scraping {{ .Values.serviceMonitor.path }} every {{ .Values.serviceMonitor.interval }}.
+{{- else }}
+   Enable Prometheus scraping with: --set serviceMonitor.enabled=true
+   Import alerts and dashboard from deploy/monitoring/{prometheus-alerts.yaml,grafana-dashboard.json}.
+{{- end }}

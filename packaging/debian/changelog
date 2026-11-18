@@ -1,0 +1,9 @@
+presswork (0.1.0-1) unstable; urgency=medium
+
+  * Initial Debian release of Presswork, a memory-safe CUPS-compatible
+    print spooler and IPP scheduler in Rust.
+  * Bind cups.socket to loopback by default and harden cups.service with
+    RuntimeDirectory, ProtectSystem=strict, and minimal capabilities.
+  * Ship tmpfiles.d, sysusers.d, logrotate.d, and conffiles metadata.
+
+ -- vindeckyy <35399491+vindeckyy@users.noreply.github.com>  Wed, 18 Nov 2026 00:00:00 +0000

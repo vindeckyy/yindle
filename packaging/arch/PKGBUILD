@@ -1,16 +1,26 @@
-# Maintainer: vindeckyy <https://github.com/vindeckyy>
+# Maintainer: vindeckyy <35399491+vindeckyy@users.noreply.github.com>
 pkgname=presswork
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="A memory-safe, CUPS 2.x-compatible print spooler and IPP scheduler in Rust (driverless-first)"
+pkgdesc="Memory-safe CUPS 2.x-compatible print spooler and IPP scheduler in Rust (driverless-first)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/vindeckyy/presswork"
-license=('MIT' 'Apache-2.0')
-depends=('glibc' 'gcc-libs' 'avahi')
+license=('Apache-2.0 OR MIT')
+depends=('glibc' 'gcc-libs' 'libxcrypt')
 makedepends=('cargo' 'rust')
+optdepends=(
+    'cups-filters: PDF, PostScript, and raster conversion filters for legacy printers'
+    'cups-client: lp, lpstat, and lpadmin command-line client tools'
+)
 provides=('cups')
 conflicts=('cups')
-backup=('etc/cups/cupsd.conf' 'etc/cups/cups-files.conf' 'etc/cups/printers.conf')
+backup=(
+    'etc/cups/cupsd.conf'
+    'etc/cups/cups-files.conf'
+    'etc/cups/printers.conf'
+    'etc/pam.d/cups'
+    'etc/logrotate.d/presswork'
+)
 source=("$pkgname-$pkgver.tar.gz::https://github.com/vindeckyy/presswork/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('74b49824bbfa2e2b417ee1caa6094743cba6fb7ffe0be71ba0e6ee3a1662121a')
 options=('!lto')   # workspace already sets its release profile
@@ -27,15 +37,23 @@ build() {
     cargo build --frozen --workspace --release
 }
 
+check() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo test --frozen --workspace --release
+}
+
 package() {
     cd "$pkgname-$pkgver"
-    make install DESTDIR="$pkgdir" PROFILE=release
-    # systemd + sysusers/tmpfiles
+    # Clean chroot-safe install: CHOWN=0 skips chown (sysusers/tmpfiles handle ownership).
+    make install-files DESTDIR="$pkgdir" PROFILE=release CHOWN=0
+    # /run/cups is created at boot by systemd-tmpfiles.
+    rm -rf "$pkgdir/run"
     install -Dm644 packaging/arch/presswork.sysusers \
         "$pkgdir/usr/lib/sysusers.d/presswork.conf"
     install -Dm644 packaging/arch/presswork.tmpfiles \
         "$pkgdir/usr/lib/tmpfiles.d/presswork.conf"
-    install -Dm644 packaging/pam/cups "$pkgdir/etc/pam.d/cups"
     install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/MIT"
     install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/Apache-2.0"
 }

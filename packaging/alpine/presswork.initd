@@ -1,17 +1,27 @@
 #!/sbin/openrc-run
 
 name="CUPS Scheduler (presswork)"
-description="print spooler and IPP scheduler"
+description="Memory-safe CUPS-compatible print spooler and IPP scheduler"
 command="/usr/sbin/cupsd"
 command_args="-f"
 command_background="yes"
 pidfile="/run/cups/cupsd.pid"
+extra_started_commands="reload"
 
 depend() {
     need net
-    after firewall avahi-daemon
+    after firewall
 }
 
 start_pre() {
-    checkpath -d -o lp:lp /run/cups /var/spool/cups /var/log/cups /var/cache/cups
+    checkpath -d -m 0755 -o lp:lp /run/cups /run/cups/certs /var/log/cups
+    checkpath -d -m 0710 -o lp:lp /var/spool/cups /var/spool/cups/tmp
+    checkpath -d -m 0770 -o lp:lp /var/cache/cups /var/cache/cups/rss
+    checkpath -d -m 0700 -o root:root /etc/cups/ssl
+}
+
+reload() {
+    ebegin "Reloading $name"
+    start-stop-daemon --signal HUP --pidfile "$pidfile"
+    eend $?
 }

@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "presswork.fullname" . }}
+  labels:
+    {{- include "presswork.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: ipp
+      port: {{ .Values.service.port }}
+      targetPort: ipp
+      protocol: TCP
+      {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePort }}
+      nodePort: {{ .Values.service.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "presswork.selectorLabels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "presswork.fullname" . }}-headless
+  labels:
+    {{- include "presswork.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: false
+  ports:
+    - name: ipp
+      port: {{ .Values.service.port }}
+      targetPort: ipp
+      protocol: TCP
+  selector:
+    {{- include "presswork.selectorLabels" . | nindent 4 }}

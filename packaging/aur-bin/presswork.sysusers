@@ -1,5 +1,6 @@
-# presswork runtime user/group — mirrors upstream CUPS' `lp` account.
-u lp - "Printing system" /var/spool/cups
+# presswork runtime user and administration group — systemd-sysusers(8).
+# `lp` is intentionally NOT added to `lpadmin` so unprivileged filters and
+# backends cannot gain @SYSTEM admin privileges via SO_PEERCRED.
 g lp -
-g lpadmin - - lp
-m lp lpadmin
+u lp - "Printing system" /var/spool/cups /usr/sbin/nologin
+g lpadmin -

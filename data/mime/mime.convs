@@ -5,9 +5,9 @@
 #
 # Base MIME conversions file for CUPS.
 #
-# Copyright © 2020-2024 by OpenPrinting.
-# Copyright © 2007-2016 by Apple Inc.
-# Copyright © 1997-2007 by Easy Software Products.
+# Copyright © 2020-2024 by OpenPrinting.
+# Copyright © 2007-2016 by Apple Inc.
+# Copyright © 1997-2007 by Easy Software Products.
 #
 # Licensed under Apache License v2.0.  See the file "LICENSE" for more
 # information.
@@ -28,17 +28,25 @@
 #   (job-id, user, title, copies, options, [filename or stdin]) to
 #   work with CUPS.
 #
+#   Presswork ships the scheduler and backends only. Conversion filters
+#   such as `pstops`, `rastertopwg`, `pdftopdf`, and `pdftoraster` are
+#   external executables supplied by the OpenPrinting `cups-filters`
+#   package (install `cups-filters` on Linux if you print to non-driverless
+#   printers or submit formats that require server-side rasterization).
+#   Driverless IPP Everywhere / AirPrint printers accept PDF, PWG Raster,
+#   and URF directly without legacy PPD filters.
+#
 
 ########################################################################
 #
-# PostScript filters
+# PostScript filters (provided by cups-filters)
 #
 
 application/postscript		application/vnd.cups-postscript	66	pstops
 
 ########################################################################
 #
-# Raster filters...
+# Raster filters (provided by cups-filters)
 #
 
 # PWG Raster filter for IPP Everywhere...
@@ -47,10 +55,12 @@ application/vnd.cups-raster	image/urf			100	rastertopwg
 
 ########################################################################
 #
-# Raw filter...
+# Raw passthrough filter
 #
-# Uncomment the following filter to allow printing of arbitrary files
-# without the -oraw option.
+# Raw passthrough is enabled below by default so pre-formatted jobs and
+# driverless clients can submit `application/octet-stream` without `-o raw`.
+# Comment out the following line (or override via `local.convs`) to reject
+# unrecognised binary data unless the client explicitly passes `-o raw`.
 #
 
 application/octet-stream	application/vnd.cups-raw	0	-

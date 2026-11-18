@@ -1,0 +1,5 @@
+# Presswork runtime user and administration group — systemd-sysusers(8).
+# `lp` is intentionally NOT added to `lpadmin`.
+g lp -
+u lp - "Printing system" /var/spool/cups /usr/sbin/nologin
+g lpadmin -

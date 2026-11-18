@@ -3,8 +3,15 @@ Description=CUPS LPD Server Socket
 PartOf=cups-lpd@.service
 
 [Socket]
-ListenStream=515
+# Loopback-only by default: LPD (RFC 1179) is an unauthenticated legacy
+# protocol. To accept LAN LPD connections on trusted networks, create a
+# drop-in (`systemctl edit cups-lpd.socket`) overriding ListenStream= and
+# restrict access with firewall rules.
+ListenStream=127.0.0.1:515
+ListenStream=[::1]:515
 Accept=yes
+MaxConnections=64
+MaxConnectionsPerSource=16
 
 [Install]
 WantedBy=sockets.target

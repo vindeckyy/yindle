@@ -1,0 +1,199 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "presswork.fullname" . }}
+  labels:
+    {{- include "presswork.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "presswork.fullname" . }}-headless
+  replicas: {{ .Values.replicaCount }}
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "presswork.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "presswork.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "presswork.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: cupsd
+          image: {{ include "presswork.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: ipp
+              containerPort: 631
+              protocol: TCP
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: ipp
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: ipp
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.startup.path }}
+              port: ipp
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: spool
+              mountPath: /var/spool/cups
+            - name: config-state
+              mountPath: /etc/cups
+            - name: config-templates
+              mountPath: /etc/cups/cupsd.conf
+              subPath: cupsd.conf
+              readOnly: true
+            - name: config-templates
+              mountPath: /etc/cups/cups-files.conf
+              subPath: cups-files.conf
+              readOnly: true
+            - name: logs
+              mountPath: /var/log/cups
+            - name: cache
+              mountPath: /var/cache/cups
+            - name: run
+              mountPath: /run/cups
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config-templates
+          configMap:
+            name: {{ include "presswork.fullname" . }}-config
+            defaultMode: 0440
+        - name: cache
+          emptyDir: {}
+        - name: run
+          emptyDir:
+            medium: Memory
+        - name: tmp
+          emptyDir: {}
+        {{- if not .Values.persistence.spool.enabled }}
+        - name: spool
+          emptyDir: {}
+        {{- end }}
+        {{- if not .Values.persistence.config.enabled }}
+        - name: config-state
+          emptyDir: {}
+        {{- end }}
+        {{- if not .Values.persistence.logs.enabled }}
+        - name: logs
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if or .Values.persistence.spool.enabled .Values.persistence.config.enabled .Values.persistence.logs.enabled }}
+  volumeClaimTemplates:
+    {{- if .Values.persistence.spool.enabled }}
+    - metadata:
+        name: spool
+        labels:
+          {{- include "presswork.selectorLabels" . | nindent 10 }}
+        {{- with .Values.persistence.spool.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.spool.accessModes | nindent 10 }}
+        {{- if .Values.persistence.spool.storageClass }}
+        storageClassName: {{ .Values.persistence.spool.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.spool.size | quote }}
+    {{- end }}
+    {{- if .Values.persistence.config.enabled }}
+    - metadata:
+        name: config-state
+        labels:
+          {{- include "presswork.selectorLabels" . | nindent 10 }}
+        {{- with .Values.persistence.config.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.config.accessModes | nindent 10 }}
+        {{- if .Values.persistence.config.storageClass }}
+        storageClassName: {{ .Values.persistence.config.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.config.size | quote }}
+    {{- end }}
+    {{- if .Values.persistence.logs.enabled }}
+    - metadata:
+        name: logs
+        labels:
+          {{- include "presswork.selectorLabels" . | nindent 10 }}
+        {{- with .Values.persistence.logs.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.logs.accessModes | nindent 10 }}
+        {{- if .Values.persistence.logs.storageClass }}
+        storageClassName: {{ .Values.persistence.logs.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.logs.size | quote }}
+    {{- end }}
+  {{- end }}
