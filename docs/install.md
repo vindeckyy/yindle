@@ -1,83 +1,225 @@
-# Installing presswork
+# Installing Presswork
 
-All paths land the same thing: a drop-in `cupsd` on port 631 plus the
-IPP helpers, backends, configs, and spool layout CUPS 2.x clients
-expect.
+Presswork installs the standard CUPS FHS layout (`/usr/sbin/cupsd`, `/usr/bin/cupsfilter`, `/usr/lib/cups/{daemon,backend,filter}`, `/usr/share/cups/mime`, `/etc/cups`, `/var/{spool,log,cache}/cups`, `/run/cups`) and standard systemd units (`cups.service`, `cups.socket`, `cups.path`, `cups-lpd.socket`, `cups-lpd@.service`).
 
-## One-command install (x86_64 Linux)
+> **Companion packages**: Presswork replaces the scheduler, helper daemons, and backends. Keep your distribution's **`cups-client`** (for `lp`, `lpr`, `lpstat`, `lpadmin`, `cancel`) and, if printing to non-driverless / legacy PPD printers, **`cups-filters`** (for `pstops`, `pdftopdf`, `rastertopwg`, etc.).
+
+---
+
+## 1. Local Evaluation (Zero Root, Zero Host Conflict)
+
+Clone the repository and run the automated isolated smoke test on `127.0.0.1:8631`:
+
+```sh
+./scripts/dev-local.sh          # builds, starts on :8631, prints a test job, cleans up
+./scripts/dev-local.sh --keep   # keeps isolated daemon running until Ctrl-C
+```
+
+---
+
+## 2. Docker & Docker Compose (Zero Host Install)
+
+Multi-arch container images (`linux/amd64`, `linux/arm64`) are published to GHCR with OCI SBOM and SLSA provenance attestations and run as non-root `lp` (`631:631`) with `ca-certificates` and a built-in `/healthz` `HEALTHCHECK`.
+
+### Docker Compose (Recommended — Hardened & Loopback-Only on `:8631`)
+
+```sh
+docker compose up --build -d
+
+# Optional: bundle OpenPrinting cups-filters for legacy PPD conversion
+INSTALL_CUPS_FILTERS=true docker compose up --build -d
+```
+
+The shipped `docker-compose.yml` binds `127.0.0.1:8631:631`, uses `read_only: true`, `no-new-privileges:true`, `cap_drop: [ALL]` + `NET_BIND_SERVICE`, `net.ipv4.ip_unprivileged_port_start: 631`, and persistent volumes for `/etc/cups`, `/var/spool/cups`, `/var/log/cups`, and `/var/cache/cups`.
+
+### Standalone `docker run`
+
+```sh
+docker run -d --name presswork \
+  -p 127.0.0.1:8631:631 \
+  --read-only \
+  --security-opt no-new-privileges:true \
+  --cap-drop ALL --cap-add NET_BIND_SERVICE \
+  --sysctl net.ipv4.ip_unprivileged_port_start=631 \
+  --tmpfs /run/cups:uid=631,gid=631,mode=0755 \
+  --tmpfs /tmp:uid=631,gid=631,mode=1777 \
+  -v cups-etc:/etc/cups \
+  -v cups-spool:/var/spool/cups \
+  -v cups-log:/var/log/cups \
+  -v cups-cache:/var/cache/cups \
+  ghcr.io/vindeckyy/presswork:0.1.0
+```
+
+Verify the container without touching host CUPS:
+
+```sh
+curl -fsS http://127.0.0.1:8631/healthz
+curl -fsS http://127.0.0.1:8631/readyz
+lpstat -h 127.0.0.1:8631 -t
+```
+
+---
+
+## 3. Kubernetes (Helm Chart)
+
+Deploy Presswork as a hardened non-root StatefulSet with PVCs, `/healthz` + `/readyz` probes, `NetworkPolicy`, and optional Prometheus `ServiceMonitor`:
+
+```sh
+helm upgrade --install presswork ./deploy/helm/presswork \
+  --namespace printing --create-namespace \
+  --set serviceMonitor.enabled=true
+```
+
+See [docs/operations.md#kubernetes--helm-deployhelmpresswork](operations.md#kubernetes--helm-deployhelmpresswork) for full values, Prometheus alert rules (`deploy/monitoring/prometheus-alerts.yaml`), and Grafana dashboard import (`deploy/monitoring/grafana-dashboard.json`).
+
+---
+
+## 4. Native Linux Installer (`install.sh`, `x86_64` & `aarch64`)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/vindeckyy/presswork/main/install.sh | sh
 ```
 
-Resolves the latest release, verifies SHA256SUMS, lands the FHS tree
-(`/usr/sbin/cupsd`, `/usr/lib/cups/{daemon,backend}`, `/etc/cups`,
-`/var/{spool,log,cache}/cups`), creates `lp`/`lpadmin`, and enables
-systemd socket activation. Flags: `--no-start`, `--version X`,
-`--from DIR`, `--force`.
+What `install.sh` does:
+- Detects `x86_64` or `aarch64` Linux and downloads the matching release tarball.
+- **Fails closed on integrity verification**: downloads `SHA256SUMS` and verifies the tarball digest before extracting (refuses to proceed if checksums cannot be verified unless `--insecure-skip-verify` is explicitly passed).
+- **Preserves existing operator configs**: never overwrites existing `/etc/cups/cupsd.conf`, `/etc/cups/cups-files.conf`, `/etc/pam.d/cups`, or `/etc/logrotate.d/presswork` (writes new defaults to `*.new` / `*.default`).
+- Creates `lp` and `lpadmin` accounts without adding `lp` to `lpadmin`, installs `/usr/lib/tmpfiles.d/presswork.conf` and `/usr/lib/sysusers.d/presswork.conf`, enables `cups.socket` + `cups.path` (loopback-only by default), and runs `cupsd -t`.
 
-## Container (zero-touch eval)
+Supported installer flags:
+
+| Flag | Behavior |
+|---|---|
+| `--no-start` | Install binaries, configs, and units without starting services |
+| `--version VER` | Install a specific release version (default: latest) |
+| `--from DIR` | Install from an already-unpacked release directory |
+| `--force` | Proceed even if another `/usr/sbin/cupsd` is already present |
+| `--insecure-skip-verify` | Skip `SHA256SUMS` verification (not recommended) |
+| `--uninstall` | Remove installed Presswork binaries and units (preserves `/etc/cups/*.conf` and `/var/spool/cups`) |
+
+---
+
+## 5. Distribution Packages
+
+### Debian / Ubuntu (`.deb`)
+
+Download `presswork_<version>-1_amd64.deb` from the [GitHub Releases](https://github.com/vindeckyy/presswork/releases) page:
 
 ```sh
-docker run -d -p 631:631 \
-  -v cups-etc:/etc/cups -v cups-spool:/var/spool/cups \
-  ghcr.io/vindeckyy/presswork:latest
+sudo apt-get install -y ./presswork_0.1.0-1_amd64.deb
 ```
 
-or `docker compose up` with `docker-compose.yml`. Nothing is installed
-on the host; remove the container and volumes to uninstall.
+The `.deb` declares `Provides: cups, cups-daemon`, `Conflicts: cups, cups-daemon`, `Replaces: cups-daemon`, `Recommends: cups-client, cups-filters`, registers `DEBIAN/conffiles`, sets proper directory/config permissions, and enables `cups.socket` + `cups.path`. You can also build a native Debian package from source via `dpkg-buildpackage -us -uc` using `packaging/debian/`.
 
-## Debian / Ubuntu package
+### Release Tarballs (`glibc` & `musl`, `x86_64` & `aarch64`)
+
+Each release publishes four Linux tarballs:
+- `presswork-<version>-x86_64-unknown-linux-gnu.tar.gz`
+- `presswork-<version>-aarch64-unknown-linux-gnu.tar.gz`
+- `presswork-<version>-x86_64-unknown-linux-musl.tar.gz`
+- `presswork-<version>-aarch64-unknown-linux-musl.tar.gz`
+
+Extract and install with the bundled installer:
 
 ```sh
-sudo dpkg -i presswork_0.1.0-1_amd64.deb
+tar -xzf presswork-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+cd presswork-0.1.0
+./install.sh --from .
 ```
 
-from the
-[releases page](https://github.com/vindeckyy/presswork/releases).
-Declares `Provides: cups` / `Conflicts: cups,cups-daemon`; postinst
-creates the lp user and enables the units.
+### Fedora / RHEL / Rocky / AlmaLinux (RPM)
 
-## Homebrew on Linux
+Build an RPM from `packaging/rpm/presswork.spec` (supports unprivileged `rpmbuild`/`mock` builds with `CHOWN=0`, `%config(noreplace)`, `tmpfiles.d`, and `sysusers.d`).
+
+### Arch Linux / AUR
+
+- Source package: `packaging/arch/PKGBUILD` (`depends=('glibc' 'gcc-libs' 'libxcrypt')`; uses dynamic `libcrypt.so.2` resolution—no `libxcrypt-compat` needed).
+- Prebuilt binary package: `packaging/aur-bin/PKGBUILD` (`presswork-bin`).
+
+### Alpine Linux (OpenRC)
+
+`packaging/alpine/APKBUILD` builds Presswork without systemd units (`INSTALL_SYSTEMD=0`) and installs an executable `/etc/init.d/presswork` OpenRC script.
+
+### Nix / NixOS
+
+`packaging/nix/package.nix` provides a `rustPlatform.buildRustPackage` derivation that stages the FHS layout cleanly without colliding with GNU `file`. When building a release tag locally, update `src.hash` (via `nix-prefetch-github`) and `cargoHash` as noted in the derivation header.
+
+### Homebrew on Linux
 
 ```sh
 brew install vindeckyy/tap/presswork && brew services start presswork
 ```
 
-User-space eval on port 8631 with configs under the brew prefix -
-coexists with a system CUPS.
+Runs in user space on port `8631` under the Homebrew prefix so it coexists cleanly with a system CUPS daemon.
 
-## Manual tarball
+---
 
-Untar `presswork-0.1.0-x86_64-unknown-linux-gnu.tar.gz`, run
-`./install.sh` inside (or copy the tree by hand), then
-`systemctl enable --now cups.socket cups.path`.
+## 6. Building & Installing from Source
 
-## From source
+Requires Rust `1.88+` (MSRV), `cc`, `cmake` (for `aws-lc-sys` / `ring`), and `make`:
 
 ```sh
-cargo build --workspace --release
+cargo build --workspace --release --locked
+cargo test --workspace --locked
 sudo make install
+sudo systemctl daemon-reload
 sudo systemctl enable --now cups.socket cups.path
 ```
 
-## Other channels
-
-- **Arch / AUR**: `packaging/aur-bin/` is a ready `presswork-bin`
-  package; `packaging/arch/PKGBUILD` builds from source.
-- **Nix**: `packaging/nix/package.nix`; submission pending as
-  NixOS/nixpkgs#587503.
-- **crates.io**: `ipp-codec`, `presswork-sys`, `backend-common`,
-  `cups-tls`, `cups-log`, `cups-config` publish via
-  `.github/workflows/publish.yml` on release.
-
-## Verify
+Packagers staging into a build root without root privileges can separate build and install:
 
 ```sh
-lpstat -t
-lpadmin -p test -E -v ipp://<printer> -m everywhere
-lp -d test /etc/hostname
+cargo build --workspace --release --locked
+make install-files DESTDIR=/path/to/stage PROFILE=release CHOWN=0
 ```
 
-See [migration.md](migration.md) for swapping a stock cupsd in place,
-and [conformance.md](conformance.md) for the compatibility report.
+Useful `Makefile` targets: `make build`, `make install`, `make install-files`, `make install-strip`, `make uninstall`, `make check-fmt`, `make clippy`, `make test`, `make coverage`, `make test-gate`, `make conformance`.
+
+---
+
+## 7. Verifying Release Checksums, SBOM & SLSA Provenance
+
+Every tagged GitHub release ships `SHA256SUMS`, a CycloneDX SBOM (`presswork-<version>.cdx.json`), and signed GitHub Artifact Build Provenance + SBOM attestations:
+
+```sh
+# 1. Verify SHA-256 digest
+sha256sum -c SHA256SUMS --ignore-missing
+
+# 2. Verify SLSA build provenance for a release tarball or .deb (requires gh >= 2.49)
+gh attestation verify presswork-0.1.0-x86_64-unknown-linux-gnu.tar.gz \
+  --repo vindeckyy/presswork
+
+# 3. Verify container image provenance and SBOM attestations
+gh attestation verify oci://ghcr.io/vindeckyy/presswork:0.1.0 \
+  --repo vindeckyy/presswork
+```
+
+See [SECURITY.md](../SECURITY.md#supply-chain-sbom--provenance-verification) for full verification details.
+
+---
+
+## 8. Post-Install Verification
+
+For a native systemd install:
+
+```sh
+cupsd -V
+sudo cupsd --check-config
+sudo cupsd doctor
+sudo usermod -aG lpadmin "$USER"   # grant admin access (re-login to apply)
+systemctl status cups.socket cups.service
+curl -fsS http://127.0.0.1:631/healthz
+lpstat -t
+```
+
+Add and test a driverless IPP Everywhere printer:
+
+```sh
+lpadmin -p office -E -v ipp://<printer-ip>/ipp/print -m everywhere
+lp -d office /etc/hostname
+```
+
+Next steps:
+- Replacing an existing CUPS daemon: [docs/migration.md](migration.md)
+- Production monitoring, TLS/mTLS, AppArmor/SELinux, and runbooks: [docs/operations.md](operations.md)
+- Upstream conformance evidence: [docs/conformance.md](conformance.md)

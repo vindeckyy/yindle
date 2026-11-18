@@ -114,11 +114,13 @@ Both sides use upstream's real test harness shape discovered in
 `ipp://localhost:port/printers` with an all-allow `<Policy default>
 <Limit All>Order Allow,Deny</Limit></Policy>` - no `SO_PEERCRED` needed.
 
-That fixture alignment surfaced a real parity fix: upstream's default
-`Satisfy` is `any` (`cupsdIsAuthorized` only ANDs host+auth under an
-explicit `Satisfy all`); ours defaulted to `All`, which over-rejected
-anonymous-but-allowed ops. Now `cups-config::Satisfy::Any` is the
-default (`crates/cups-config/src/types.rs`).
+That fixture alignment also clarified a deliberate security divergence:
+upstream CUPS defaults to `Satisfy any`, whereas Presswork defaults to
+fail-closed `Satisfy all` (`crates/cups-config/src/types.rs`, documented
+in [`docs/deviations.md`](deviations.md)) so host-ACL rules cannot
+silently bypass `Require user @SYSTEM` / `@OWNER`. The differential
+fixture uses an explicit unauthenticated `<Limit All>` block matching
+upstream's `run-stp-tests.sh`.
 
 Current differential baseline (same fixture, both daemons): every test
 stock cupsd **passes**, presswork also passes - `get-printers*`,

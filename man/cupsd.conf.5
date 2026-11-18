@@ -1,0 +1,510 @@
+.TH CUPSD.CONF 5 "2026-11-18" "Presswork 0.1.0" "File Formats"
+.SH NAME
+cupsd.conf \- scheduler configuration file for Presswork cupsd
+.SH DESCRIPTION
+The
+.I cupsd.conf
+file configures network listeners, TLS options, logging, job limits, DNS-SD
+sharing, HTTP location ACLs, and IPP operation policies for
+.BR cupsd (8).
+It is normally located at
+.I /etc/cups/cupsd.conf
+with permissions
+.B 0640
+owned by
+.BR root:lp .
+.PP
+Each line contains a case-insensitive directive name followed by whitespace and
+its value.
+Lines beginning with
+.B #
+and blank lines are ignored.
+Paths, user/group settings, and sandboxing directives live in
+.BR cups\-files.conf (5).
+Validate edits before reloading with
+.B cupsd \-\-check\-config
+and apply without dropping connections using
+.B systemctl reload cups.service
+.RB ( SIGHUP ).
+.SH TOP-LEVEL DIRECTIVES
+.SS Network Listeners & TLS
+.TP
+.BI Listen " address:port" " | " /path/to/socket
+Listen for HTTP/IPP connections on the specified IPv4/IPv6 address and port
+(e.g.,
+.BR "Listen localhost:631" )
+or Unix domain socket (e.g.,
+.BR "Listen /run/cups/cups.sock" ).
+May be specified multiple times.
+.TP
+.BI Port " number"
+Listen on all interfaces on TCP port
+.I number
+(flagged as
+.B WILDCARD_LISTEN
+by
+.BR "cupsd \-\-check\-config" ;
+prefer explicit
+.B Listen
+or
+.B SSLListen
+addresses).
+.TP
+.BI SSLListen " address:port"
+Listen for direct TLS (IPPS/HTTPS from the first byte) on the specified address
+and port.
+Presswork fails closed if an explicit TLS listener cannot initialize its
+certificate/key pair.
+.TP
+.BI SSLPort " number"
+Listen for direct TLS on all interfaces on TCP port
+.IR number .
+.TP
+.BI SSLOptions " [None] [MinTLS1.2|MinTLS1.3] [MaxTLS1.2|MaxTLS1.3] [DenyCBC]"
+Configure TLS protocol bounds for
+.BR rustls .
+Defaults to TLS 1.2+ with AEAD cipher suites only.
+Legacy protocol options
+.RB ( AllowSSL3 ,
+.BR MinTLS1.0 ,
+.BR MinTLS1.1 ,
+.BR AllowRC4 )
+are rejected or flagged as
+.B WEAK_TLS_OPTIONS
+by
+.BR "cupsd \-\-check\-config" .
+.SS Server Identity
+.TP
+.BI ServerName " hostname"
+Canonical hostname advertised in URIs and accepted in HTTP
+.B Host:
+headers.
+.TP
+.BI ServerAlias " hostname [hostname ...]"
+Additional hostnames accepted in HTTP
+.B Host:
+headers to prevent DNS rebinding attacks.
+Avoid
+.B "ServerAlias *"
+(flagged as
+.B WILDCARD_SERVER_ALIAS
+by
+.BR "cupsd \-\-check\-config" ).
+.TP
+.BI ServerAdmin " email"
+Administrator contact email address.
+.TP
+.BI ServerTokens " None|ProductOnly|Major|Minor|Minimal|OS|Full"
+Controls verbosity of the HTTP
+.B Server:
+response header.
+.TP
+.BI HostNameLookups " On|Off|Double"
+Controls reverse DNS lookup for client IP addresses (default:
+.BR Off ).
+.SS Logging
+.TP
+.BI LogLevel " none|emerg|alert|crit|error|warn|notice|info|debug|debug2"
+Verbosity threshold for
+.I error_log
+(default:
+.BR warn ).
+.TP
+.BI AccessLogLevel " none|config|actions|all"
+Controls which HTTP/IPP requests are recorded in
+.I access_log
+(default:
+.BR actions ).
+.TP
+.BI LogTimeFormat " standard|usecs"
+Timestamp precision in logs (default:
+.BR standard ).
+.TP
+.BI MaxLogSize " size"
+Maximum log file size before atomic
+.I .O
+rotation (supports
+.BR k ,
+.BR m ,
+.B g
+suffixes; default
+.B 1m
+in code,
+.B 0
+in shipped
+.I cupsd.conf.default
+to delegate rotation to
+.BR logrotate (8)).
+.TP
+.BI LogDebugHistory " count"
+Number of recent debug messages retained in memory (default:
+.BR 200 ).
+.TP
+.BI PageLogFormat " [format]"
+Template for
+.I page_log
+entries (default:
+.BR "%p %u %j %T %P %C %{job\-billing} %{job\-originating\-host\-name} %{job\-name} %{media} %{sides}" ).
+An empty value disables
+.I page_log
+writing.
+.SS Client & Connection Limits
+.TP
+.BI MaxClients " count"
+Maximum concurrent client connections (default:
+.BR 100 ).
+.TP
+.BI MaxClientsPerHost " count"
+Maximum concurrent client connections per remote IP (default:
+.BR 0 ,
+meaning derived/unlimited).
+.TP
+.BI MaxRequestSize " size"
+Maximum HTTP/IPP request body size (also accepted as
+.BR LimitRequestBody ;
+supports
+.BR k / m / g
+suffixes).
+Oversized requests are rejected with HTTP
+.B 413 Payload Too Large
+before
+.BR "100 Continue" .
+.TP
+.BI Timeout " seconds"
+HTTP I/O timeout in seconds (default:
+.BR 900 ).
+.TP
+.BI KeepAlive " Yes|No"
+Enable or disable HTTP/1.1 persistent connections (default:
+.BR Yes ).
+.TP
+.BI MultipleOperationTimeout " seconds"
+Maximum lifetime for multi-document
+.B Create\-Job
+/
+.B Send\-Document
+sequences (default:
+.BR 900 ).
+.TP
+.BI ReloadTimeout " seconds"
+Maximum time to wait for graceful reload housekeeping (default:
+.BR 30 ).
+.TP
+.BI DirtyCleanInterval " seconds"
+Interval between persisting dirty state files to disk (default:
+.BR 30 ).
+.TP
+.BI IdleExitTimeout " seconds"
+Idle timeout before exiting in
+.B \-l
+on-demand mode (default:
+.BR 60 ).
+.SS Jobs, Queues & Filters
+.TP
+.BI ErrorPolicy " abort\-job|retry\-current\-job|retry\-job|stop\-printer"
+Default action when a backend fails (shipped default:
+.BR retry\-job ).
+.TP
+.BI MaxJobs " count"
+Maximum total jobs kept in memory/history (default:
+.BR 500 ).
+.TP
+.BI MaxActiveJobs " count"
+Maximum simultaneously active jobs (default:
+.BR 0 ,
+unlimited).
+.TP
+.BI MaxJobsPerUser " count"
+Maximum active jobs per user (default:
+.BR 0 ).
+.TP
+.BI MaxJobsPerPrinter " count"
+Maximum active jobs per printer (default:
+.BR 0 ).
+.TP
+.BI MaxCopies " count"
+Maximum copies allowed per print job (default:
+.BR 9999 ).
+.TP
+.BI MaxJobTime " duration"
+Maximum runtime for a single job before cancellation (supports
+.BR m / h / d / w
+suffixes; default:
+.BR 10800
+seconds / 3 hours).
+.TP
+.BI MaxHoldTime " duration"
+Maximum time a job may remain held before automatic cancellation (default:
+.BR 0 ).
+.TP
+.BI PreserveJobHistory " Yes|No|duration"
+How long completed job control metadata is retained (default:
+.BR Yes ).
+.TP
+.BI PreserveJobFiles " Yes|No|duration"
+How long completed job document files
+.RI ( d* )
+are retained (default:
+.B 86400
+seconds / 1 day).
+.TP
+.BI AutoPurgeJobs " Yes|No"
+Automatically purge completed jobs once quotas are exceeded (default:
+.BR No ).
+.TP
+.BI JobKillDelay " seconds"
+Grace period between
+.B SIGTERM
+and
+.B SIGKILL
+when canceling a running job's filter/backend process group (default:
+.BR 300 ).
+.TP
+.BI JobRetryLimit " count"
+Maximum retry attempts under
+.B retry\-job
+policy (default:
+.BR 5 ).
+.TP
+.BI JobRetryInterval " seconds"
+Delay between retry attempts (default:
+.BR 300 ).
+.TP
+.BI FilterLimit " cost"
+Maximum total filter cost allowed to run concurrently across all jobs (default:
+.BR 0 ,
+unlimited).
+Exposed via Prometheus
+.B presswork_filter_limit
+and
+.B presswork_filter_cost_current
+metrics.
+.TP
+.BI FilterNice " 0..19"
+Scheduling niceness applied to filter processes (default:
+.BR 0 ).
+.SS Browsing, Sharing & DNS-SD
+.TP
+.BI Browsing " Yes|No"
+Enable or disable network printer advertising (shipped default:
+.BR No ).
+.TP
+.BI BrowseLocalProtocols " none|dnssd|all"
+Protocols used to advertise shared local printers (default:
+.BR dnssd ).
+.TP
+.BI BrowseWebIF " Yes|No"
+Advertise the web interface over DNS-SD (default:
+.BR No ).
+.TP
+.BI BrowseIPPSOnly " Yes|No"
+Advertise only TLS-protected
+.B _ipps._tcp
+records (default:
+.BR No ).
+.TP
+.BI BrowseDNSSDSubTypes " _cups,_print,_universal"
+Comma-separated DNS-SD subtypes advertised for AirPrint/driverless clients.
+.TP
+.BI DNSSDComputerName " name"
+Override computer name used in DNS-SD service instances.
+.TP
+.BI DNSSDHostName " hostname"
+Override hostname advertised in DNS-SD SRV records.
+.TP
+.BI DefaultShared " Yes|No"
+Whether newly created queues are shared by default (shipped default:
+.BR No ).
+.SS Subscriptions, Auth & General
+.TP
+.BI DefaultAuthType " Basic|Auto|None"
+Authentication scheme used when a block specifies
+.B AuthType Default
+(shipped default:
+.BR Basic ).
+.TP
+.BI DefaultEncryption " Never|IfRequested|Required"
+Default TLS policy when a location does not specify
+.B Encryption
+(default:
+.BR IfRequested ).
+.TP
+.BI DefaultPolicy " name"
+Name of the default
+.B <Policy>
+applied to queues without an explicit
+.B OpPolicy
+(default:
+.BR default ).
+.TP
+.BI WebInterface " Yes|No"
+Enable or disable HTTP access to static/CGI pages and the built-in HTML status
+fallback on
+.IR / ,
+.IR /printers ,
+.IR /classes ,
+and
+.I /jobs
+(default:
+.BR Yes ).
+.TP
+.BI MaxSubscriptions " count"
+Maximum active RFC 3995 event subscriptions (default:
+.BR 100 ).
+Also supports
+.BR MaxSubscriptionsPerJob ,
+.BR MaxSubscriptionsPerPrinter ,
+.BR MaxSubscriptionsPerUser ,
+.BR DefaultLeaseDuration ,
+.BR MaxLeaseDuration ,
+and
+.BR MaxEvents .
+.TP
+.BI Classification " banner"
+Force a security classification banner (with optional
+.BR "ClassifyOverride Yes|No" ).
+.TP
+.BI DefaultLanguage " locale"
+Default natural language tag (default:
+.BR en ).
+.TP
+.BI DefaultPaperSize " size"
+Default media size (e.g.,
+.B Letter
+or
+.BR A4 ).
+.TP
+.BI ReadyPaperSizes " size[,size...]"
+Loaded media sizes reported in
+.BR media\-ready .
+.TP
+.BI StrictConformance " Yes|No"
+Require strict IPP conformance checks (default:
+.BR No ).
+.TP
+.BI RootCertDuration " seconds"
+Rotation interval for local auth certificates (default:
+.BR 300 ).
+.TP
+.BI GSSServiceName " name"
+Kerberos service principal name (parsed for compatibility; native GSSAPI
+runtime adapter is on the roadmap).
+.SH LOCATION AND POLICY BLOCKS
+.SS <Location /path> ... </Location>
+Controls HTTP/IPP access to URL prefixes
+.RI ( / ,
+.IR /admin ,
+.IR /admin/conf ,
+.IR /printers ,
+.IR /jobs ,
+etc.).
+Canonical path normalization rejects
+.BR .. ,
+backslashes, and NUL bytes fail-closed.
+.SS <Policy name> ... </Policy>
+Defines per-operation IPP authorization rules using nested
+.B "<Limit op1 op2 ...>"
+or
+.B "<LimitExcept op1 ...>"
+blocks plus privacy directives:
+.BR JobPrivateAccess ,
+.BR JobPrivateValues ,
+.BR SubscriptionPrivateAccess ,
+and
+.BR SubscriptionPrivateValues .
+In Presswork, operations that do not match any
+.B <Limit>
+(or
+.BR "<Limit All>" )
+are denied fail-closed.
+.SS Directives Inside Location and Limit Blocks
+.TP
+.BI Order " allow,deny|deny,allow"
+Evaluation order for
+.B Allow
+and
+.B Deny
+host rules.
+.TP
+.BI Allow " [from] all|none|@LOCAL|@IF(name)|host|ip|ip/cidr|ip/mask"
+Permit matching client peer addresses.
+Supports IPv4, IPv6, IPv4-mapped IPv6 normalization, real local interface subnet
+matching
+.RB ( @LOCAL ),
+and named interface matching
+.RB ( @IF(eth0) ).
+.TP
+.BI Deny " [from] all|none|@LOCAL|@IF(name)|host|ip|ip/cidr|ip/mask"
+Deny matching client peer addresses.
+.B "Deny from all"
+matches both IPv4 and IPv6 addresses.
+.TP
+.BI AuthType " None|Basic|Default|Negotiate"
+Authentication requirement for this block.
+.TP
+.BI Encryption " IfRequested|Required|Never"
+Require TLS
+.RB ( Required
+emits HTTP
+.B 426 Upgrade Required
+on plaintext connections) or permit opportunistic upgrade.
+.TP
+.BI Require " valid\-user | user @OWNER @SYSTEM name ... | group name ..."
+Restrict access to authenticated users, job owners
+.RB ( @OWNER ),
+configured
+.B SystemGroup
+administrators
+.RB ( @SYSTEM ),
+or Unix groups.
+.TP
+.BI Satisfy " all|any"
+Controls whether
+.B both
+host ACL and authentication rules must pass
+.RB ( all )
+or either one suffices
+.RB ( any ).
+.B Security note:
+Presswork intentionally defaults to
+.B "Satisfy all"
+(differing from upstream CUPS's
+.B "Satisfy any"
+default) so empty host ACLs cannot bypass
+.BR "Require user @SYSTEM" .
+.SH EXAMPLES
+Minimal hardened loopback configuration:
+.PP
+.EX
+LogLevel warn
+MaxLogSize 0
+ErrorPolicy retry\-job
+Listen localhost:631
+Listen /run/cups/cups.sock
+Browsing No
+DefaultAuthType Basic
+DefaultShared No
+WebInterface Yes
+
+<Location />
+  Order allow,deny
+  Allow from @LOCAL
+</Location>
+
+<Location /admin>
+  AuthType Default
+  Require user @SYSTEM
+  Satisfy all
+  Order allow,deny
+  Allow from @LOCAL
+</Location>
+.EE
+.SH FILES
+.I /etc/cups/cupsd.conf
+.br
+.I /etc/cups/cupsd.conf.default
+.SH SEE ALSO
+.BR cupsd (8),
+.BR cups\-files.conf (5),
+.BR cupsfilter (8),
+.BR cups\-lpd (8)

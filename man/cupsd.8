@@ -1,0 +1,350 @@
+.TH CUPSD 8 "2026-11-18" "Presswork 0.1.0" "System Administration"
+.SH NAME
+cupsd \- Presswork CUPS-compatible print scheduler and IPP server
+.SH SYNOPSIS
+.B cupsd
+.RB [ \-c
+.IR cupsd.conf ]
+.RB [ \-s
+.IR cups\-files.conf ]
+.RB [ \-f | \-F ]
+.RB [ \-l ]
+.RB [ \-t ]
+.RB [ \-\-log\-format
+.IR text | json ]
+.br
+.B cupsd
+.B \-\-check\-config
+.RB [ \-c
+.IR cupsd.conf ]
+.RB [ \-s
+.IR cups\-files.conf ]
+.RB [ \-\-json ]
+.br
+.B cupsd
+.B doctor
+.RB [ \-c
+.IR cupsd.conf ]
+.RB [ \-s
+.IR cups\-files.conf ]
+.RB [ \-\-json ]
+.br
+.B cupsd
+.RB [ \-v | \-V | \-\-version ]
+.br
+.B cupsd
+.RB [ \-h | \-\-help ]
+.SH DESCRIPTION
+.B cupsd
+is the Presswork print scheduler, a memory-safe Rust drop-in replacement for the
+OpenPrinting CUPS 2.x daemon.
+It implements the Internet Printing Protocol (IPP 1.0\(en2.2 and IPP Everywhere),
+HTTP/1.1 with RFC 2817 TLS upgrade and direct TLS/mTLS listeners, Unix domain
+socket peer authentication
+.RB ( SO_PEERCRED ),
+PAM-first Basic authentication, fail-closed
+.B <Location>
+and
+.B <Policy>
+authorization, driverless and PPD/filter-based job pipelines sandboxed via
+.BR cups\-exec ,
+DNS-SD/AirPrint advertising, D-Bus notifications, and built-in HTTP observability
+endpoints.
+.PP
+Existing CUPS configuration files
+.RB ( cupsd.conf (5),
+.BR cups\-files.conf (5),
+.IR printers.conf ,
+.IR classes.conf ,
+.IR subscriptions.conf ),
+the
+.I /var/spool/cups
+layout, and external filters/backends work in place.
+.SH OPTIONS
+.TP
+.BI \-c " cupsd.conf"
+Use an alternate
+.B cupsd.conf
+configuration file instead of the default
+.IR /etc/cups/cupsd.conf .
+.TP
+.BI \-s " cups\-files.conf"
+Use an alternate
+.B cups\-files.conf
+configuration file instead of resolving a sibling
+.I cups\-files.conf
+next to
+.I cupsd.conf
+or
+.IR /etc/cups/cups\-files.conf .
+Honored even when combined with
+.BR \-c .
+.TP
+.B \-f
+Run
+.B cupsd
+in the foreground rather than detaching to the background (recommended for
+containers and process supervisors).
+.TP
+.B \-F
+Run
+.B cupsd
+in the foreground without detaching from the controlling terminal or process
+group.
+.TP
+.B \-l
+Run in on-demand / socket-activated mode (used by
+.IR cups.service ),
+exiting cleanly when idle for
+.B IdleExitTimeout
+seconds with no active jobs, clients, or subscriptions.
+.TP
+.B \-t
+Test the configuration files for syntax errors, print diagnostics, and exit
+without starting the scheduler.
+.TP
+.BR \-v ", " \-V ", " \-\-version
+Print Presswork version information and exit with status 0.
+.TP
+.BR \-h ", " \-\-help
+Print usage summary and exit with status 0.
+.TP
+.BI \-\-log\-format " text|json"
+Select log output format for
+.IR error_log ,
+.IR access_log ,
+.IR page_log ,
+and audit events.
+Defaults to classic CUPS
+.B text
+format.
+Set
+.B json
+(or the environment variable
+.BR PRESSWORK_LOG_FORMAT=json )
+for newline-delimited structured JSON suitable for SIEM/ELK/Loki ingestion.
+.TP
+.BR \-\-check\-config " [" \-\-json ]
+Run the built-in configuration migration and security linter against
+.I cupsd.conf
+and
+.IR cups\-files.conf .
+Classifies every directive as Supported, Deprecated, Moved, or Unknown, and
+reports security findings (such as
+.BR FILE_DEVICE_ENABLED ,
+.BR LOCATION_SATISFY_ANY ,
+.BR WILDCARD_LISTEN ,
+.BR WILDCARD_SERVER_ALIAS ,
+or
+.BR WEAK_TLS_OPTIONS )
+with remediation hints.
+Exits non-zero on parse errors.
+Pass
+.B \-\-json
+for machine-readable output.
+.TP
+.BR doctor " [" \-c " " \fIcupsd.conf\fP "] [" \-s " " \fIcups\-files.conf\fP "] [" \-\-json ]
+Run live host and environment readiness diagnostics: checks configuration syntax
+and security posture, required directory existence and permissions
+.RB ( ServerRoot ,
+.BR RequestRoot ,
+.BR CacheDir ,
+.BR TempDir ,
+.BR LogDir ,
+.BR StateDir ),
+loaded MIME rule counts, presence and permissions of
+.BR cups\-exec ,
+.BR cups\-deviced ,
+.BR cups\-driverd ,
+backends, and filters, TLS certificate/key validity, PAM/NSS availability, and
+known host conflicts (such as a leftover stock Ubuntu/Debian AppArmor profile
+at
+.IR /etc/apparmor.d/usr.sbin.cupsd ).
+.SH HTTP OBSERVABILITY AND STATUS ENDPOINTS
+Subject to configured
+.B <Location>
+rules,
+.B cupsd
+exposes built-in operational endpoints alongside IPP:
+.TP
+.B GET /healthz
+Liveness endpoint returning HTTP 200 JSON with scheduler status, version, and
+uptime.
+.TP
+.B GET /readyz
+Readiness endpoint returning HTTP 200 JSON when the spooler and scheduler are
+ready, or HTTP 503 Service Unavailable while draining or unhealthy.
+.TP
+.B GET /metrics
+Prometheus text exposition
+.RB ( text/plain;\ version=0.0.4;\ charset=utf\-8 )
+exporting
+.BR presswork_jobs_active ,
+.BR presswork_jobs_pending ,
+.BR presswork_jobs_total ,
+.BR presswork_job_duration_seconds ,
+.BR presswork_ipp_requests_total ,
+.BR presswork_auth_failures_total ,
+.BR presswork_active_clients ,
+.BR presswork_filter_cost_current ,
+and
+.BR presswork_filter_limit .
+.TP
+.BR "GET /" ", " /printers ", " /classes ", " /jobs
+When
+.B WebInterface Yes
+is enabled and no static files or stock CGI scripts exist in
+.BR DocumentRoot ,
+serves a built-in, read-only, XSS-escaped HTML status interface with security
+headers
+.RB ( X\-Content\-Type\-Options ,
+.BR X\-Frame\-Options ,
+.BR Content\-Security\-Policy ).
+.SH SIGNALS
+.TP
+.B SIGHUP
+Zero-downtime configuration reload: notifies systemd
+.RB ( RELOADING=1 ),
+reloads
+.I cupsd.conf
+and
+.IR cups\-files.conf ,
+reloads the MIME database, atomically reloads TLS certificates and keys from
+.B ServerKeychain
+(retaining the previous valid certificate on error), reopens log files for
+.BR logrotate (8),
+refreshes DNS-SD advertisements, and notifies systemd
+.RB ( READY=1 ).
+.TP
+.BR SIGTERM ", " SIGINT
+Graceful shutdown: notifies systemd
+.RB ( STOPPING=1 ),
+switches
+.B /readyz
+to HTTP 503, stops accepting new connections, deregisters DNS-SD services,
+drains in-flight requests, terminates active job process groups cleanly, and
+persists
+.IR printers.conf ,
+.IR classes.conf ,
+.IR subscriptions.conf ,
+and
+.I job.cache
+before exiting.
+.SH ENVIRONMENT
+.TP
+.B PRESSWORK_LOG_FORMAT
+Set to
+.B json
+or
+.B text
+to choose the default log format when
+.B \-\-log\-format
+is not passed on the command line.
+.TP
+.BR LISTEN_FDS ", " LISTEN_PID
+Standard systemd socket-activation variables consumed via
+.B sd_listen_fds
+(file descriptors are marked
+.B FD_CLOEXEC
+and variables are cleared before spawning children).
+.TP
+.BR NOTIFY_SOCKET ", " WATCHDOG_USEC
+Standard systemd readiness, reload, stop, and watchdog notification variables.
+.TP
+.B TZ
+POSIX time zone or zoneinfo identifier used by Presswork's thread-safe pure-Rust
+RFC 8536 TZif localtime log formatter.
+.SH FILES
+.TP
+.I /etc/cups/cupsd.conf
+Primary scheduler configuration file.
+.TP
+.I /etc/cups/cups\-files.conf
+Filesystem paths, permissions, user/group, and sandboxing configuration file.
+.TP
+.I /etc/cups/printers.conf
+Persisted printer queue definitions (mode 0640, root:lp).
+.TP
+.I /etc/cups/classes.conf
+Persisted printer class definitions (mode 0640, root:lp).
+.TP
+.I /etc/cups/subscriptions.conf
+Persisted RFC 3995 event subscriptions (mode 0640, root:lp).
+.TP
+.I /etc/cups/ppd/
+Per-queue PPD files.
+.TP
+.I /etc/cups/ssl/
+TLS server certificate
+.RI ( server.crt )
+and private key
+.RI ( server.key ,
+directory mode 0700, key mode 0600).
+.TP
+.I /usr/share/cups/mime/
+Standard MIME type and conversion rule database
+.RI ( mime.types ", " mime.convs ).
+.TP
+.I /var/spool/cups/
+Job control
+.RI ( c* )
+and document
+.RI ( d* )
+spool files (mode 0600, lp:lp).
+.TP
+.I /var/log/cups/
+Scheduler log files
+.RI ( error_log ", " access_log ", " page_log ).
+.TP
+.I /run/cups/cups.sock
+Local Unix domain socket for IPP clients and
+.B SO_PEERCRED
+authentication.
+.SH SECURITY
+Presswork enforces
+.B #![forbid(unsafe_code)]
+across all crates outside one audited FFI crate, defaults
+.B <Location>
+and
+.B <Policy>
+blocks to fail-closed
+.BR "Satisfy all" ,
+binds
+.I cups.socket
+to loopback by default, drops filter/backend privileges via
+.B cups\-exec
+with
+.BR "umask 077" ,
+.BR setrlimit (2),
+.BR PR_SET_NO_NEW_PRIVS ,
+and Linux Landlock sandboxing, and enforces outbound backend SSRF protections.
+.SH EXIT STATUS
+.TP
+.B 0
+Normal termination, valid configuration test, or passing diagnostics.
+.TP
+.B 1
+Fatal startup error, invalid command-line arguments, failed configuration test,
+or failing diagnostics.
+.SH EXAMPLES
+Validate configuration syntax and run security/migration audit:
+.PP
+.EX
+sudo cupsd \-t
+sudo cupsd \-\-check\-config
+sudo cupsd doctor
+.EE
+.PP
+Run an isolated unprivileged instance on port 8631 with structured JSON logs:
+.PP
+.EX
+cupsd \-c /tmp/pw/etc/cupsd.conf \-s /tmp/pw/etc/cups\-files.conf \-f \-\-log\-format json
+.EE
+.SH SEE ALSO
+.BR cupsd.conf (5),
+.BR cups\-files.conf (5),
+.BR cups\-lpd (8),
+.BR cupsfilter (8),
+.BR lpadmin (8),
+.BR lpstat (1),
+.BR systemctl (1)

@@ -1,0 +1,168 @@
+.TH CUPS-LPD 8 "2026-11-18" "Presswork 0.1.0" "System Administration"
+.SH NAME
+cups\-lpd \- Presswork RFC 1179 LPD-to-IPP compatibility daemon
+.SH SYNOPSIS
+.B /usr/lib/cups/daemon/cups\-lpd
+.SH DESCRIPTION
+.B cups\-lpd
+is a hardened mini-server that accepts legacy Line Printer Daemon (RFC 1179)
+requests on standard input/output \(en typically launched per connection via
+.BR systemd.socket (5)
+.RI ( cups\-lpd.socket
+and
+.IR cups\-lpd@.service )
+or
+.BR inetd (8)
+\(en and forwards them to the local Presswork
+.BR cupsd (8)
+scheduler over IPP on
+.BR 127.0.0.1 .
+.PP
+Unlike legacy in-RAM implementations, Presswork's
+.B cups\-lpd
+streams incoming print jobs directly to a bounded temporary spool file created
+with mode
+.B 0600
+and
+.B O_CREAT | O_EXCL | O_NOFOLLOW
+(automatically deleted on exit), sanitizes control-file fields, validates queue
+names against URI/header injection, and queries real queue state and job
+cancellation over IPP.
+.SH SUPPORTED RFC 1179 COMMANDS
+.TP
+.BR 0x01 " (Print waiting jobs)"
+Validates the queue name and returns an RFC 1179 acknowledgment byte.
+.TP
+.BR 0x02 " (Receive a printer job)"
+Supports both control-before-data
+.RB ( 0x02 " then " 0x03 )
+and data-before-control
+.RB ( 0x03 " then " 0x02 )
+subcommand orders, plus subcommand
+.B 0x01
+(abort job).
+Parses RFC 1179 control-file lines
+.RB ( H
+originating host,
+.B P
+user,
+.B J
+job title,
+.B N
+filename, and format commands
+.B l
+raw,
+.B o
+PostScript,
+.BR f / p
+plain text, plus copy count) and submits an IPP
+.B Print\-Job
+request to
+.IR /printers/<queue> .
+.TP
+.BR 0x03 " / " 0x04 " (Send queue state: short / long)"
+Queries
+.BR cupsd (8)
+via IPP
+.B Get\-Jobs
+.RB ( which\-jobs=not\-completed )
+and formats live BSD-compatible queue listings, honoring optional user and
+job-ID filters.
+.TP
+.BR 0x05 " (Remove jobs)"
+Translates job IDs, usernames, or
+.B \-all
+requests into IPP
+.B Cancel\-Job
+operations against
+.IR /printers/<queue> .
+.SH ENVIRONMENT
+.TP
+.B IPP_PORT
+Local TCP port on
+.B 127.0.0.1
+where
+.BR cupsd (8)
+listens (default:
+.BR 631 ).
+Must be a strictly numeric integer in
+.BR 1..65535 ;
+non-numeric or injection values cause immediate exit with failure.
+.TP
+.B CUPS_LPD_MAX_SIZE
+Maximum accepted LPD job payload size in bytes (default:
+.B 104857600
+/ 100 MiB).
+Jobs exceeding this limit are rejected cleanly without exhausting memory.
+.TP
+.B CUPS_LPD_TIMEOUT
+Socket I/O timeout in seconds when communicating with
+.BR cupsd (8)
+(default:
+.BR 60 ).
+.SH SYSTEMD ACTIVATION
+Enable the loopback LPD listener only if legacy RFC 1179 clients require it:
+.PP
+.EX
+sudo systemctl enable \-\-now cups\-lpd.socket
+.EE
+.PP
+By default,
+.I cups\-lpd.socket
+binds
+.B 127.0.0.1:515
+and
+.B [::1]:515
+with
+.B Accept=yes ,
+.B MaxConnections=64 ,
+and
+.B MaxConnectionsPerSource=16 .
+Each connection runs under
+.I cups\-lpd@.service
+as unprivileged
+.B User=lp
+/
+.B Group=lp
+with empty
+.B CapabilityBoundingSet= ,
+.B ProtectSystem=strict ,
+.B PrivateDevices=true ,
+.B UMask=0077 ,
+.B MemoryMax=64M ,
+and
+.B TasksMax=16 .
+.PP
+To accept LPD traffic from a trusted LAN subnet, override
+.B ListenStream=
+via
+.B "systemctl edit cups\-lpd.socket"
+and restrict source IP addresses with host firewall rules.
+.SH SECURITY
+RFC 1179 LPD provides no transport encryption and no strong client
+authentication.
+Do not expose TCP port 515 to untrusted networks.
+Queue names are strictly validated to ASCII alphanumerics plus
+.BR _ ,
+.BR \- ,
+.BR . ,
+and
+.B +
+(max 127 bytes, rejecting leading hyphens and path traversal).
+.SH FILES
+.TP
+.I /usr/lib/cups/daemon/cups\-lpd
+LPD bridge executable.
+.TP
+.I /usr/lib/systemd/system/cups\-lpd.socket
+Systemd socket unit (loopback-only default).
+.TP
+.I /usr/lib/systemd/system/cups\-lpd@.service
+Hardened per-connection service unit.
+.SH SEE ALSO
+.BR cupsd (8),
+.BR cupsd.conf (5),
+.BR lpr (1),
+.BR lpq (1),
+.BR lprm (1),
+.BR systemd.socket (5)
