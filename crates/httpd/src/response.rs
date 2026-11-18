@@ -1,9 +1,10 @@
-//! HTTP response emission — status line, headers, body.
+//! HTTP response emission — status line, headers, body, and security headers.
 
+use crate::headers::{is_valid_header_name, is_valid_header_value};
 use crate::Headers;
 
-/// Status codes cupsd actually emits (upstream `HTTP_STATUS_*`);
-/// `as_u16` covers the wire value.
+/// Status codes `cupsd` emits (upstream `HTTP_STATUS_*`);
+/// `.0` covers the wire value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusCode(pub u16);
 
@@ -32,12 +33,16 @@ impl StatusCode {
     pub const NOT_FOUND: Self = Self(404);
     /// `405 Method Not Allowed`.
     pub const METHOD_NOT_ALLOWED: Self = Self(405);
+    /// `408 Request Timeout`.
+    pub const REQUEST_TIMEOUT: Self = Self(408);
     /// `413 Content Too Large` (upstream `HTTP_STATUS_REQUEST_TOO_LARGE`).
     pub const TOO_LARGE: Self = Self(413);
     /// `417 Expectation Failed`.
     pub const EXPECTATION_FAILED: Self = Self(417);
     /// `426 Upgrade Required`.
     pub const UPGRADE_REQUIRED: Self = Self(426);
+    /// `431 Request Header Fields Too Large`.
+    pub const HEADER_FIELDS_TOO_LARGE: Self = Self(431);
     /// `500 Internal Server Error`.
     pub const INTERNAL: Self = Self(500);
     /// `501 Not Implemented`.
@@ -46,8 +51,8 @@ impl StatusCode {
     pub const VERSION_NOT_SUPPORTED: Self = Self(505);
 }
 
-/// Reason phrase — upstream `httpStatus()` table, the subset cupsd
-/// emits (plus generic "code NNN" fallback which upstream does too).
+/// Reason phrase — upstream `httpStatus()` table, the subset `cupsd`
+/// emits (plus generic `"Status NNN"` fallback which upstream does too).
 #[must_use]
 pub fn reason_phrase(code: u16) -> String {
     match code {
@@ -74,6 +79,7 @@ pub fn reason_phrase(code: u16) -> String {
         414 => "URI Too Long",
         417 => "Expectation Failed",
         426 => "Upgrade Required",
+        431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
         501 => "Not Implemented",
         502 => "Bad Gateway",
@@ -89,10 +95,9 @@ pub fn reason_phrase(code: u16) -> String {
 pub struct Response {
     /// Status code.
     pub status: StatusCode,
-    /// Response headers (`Content-Length`/`Transfer-Encoding` computed
-    /// at emission if not set).
+    /// Response headers (`Content-Length` computed at emission if not set).
     pub headers: Headers,
-    /// Body bytes (empty for HEAD/304).
+    /// Body bytes (empty for HEAD/304/1xx).
     pub body: Vec<u8>,
 }
 
@@ -122,9 +127,24 @@ impl Response {
         Self::with_body(status, "application/ipp", body)
     }
 
+    /// Attach standard security headers (`X-Content-Type-Options`,
+    /// `X-Frame-Options`, `Referrer-Policy`, `Content-Security-Policy`).
+    #[must_use]
+    pub fn with_security_headers(mut self) -> Self {
+        self.apply_security_headers();
+        self
+    }
+
+    /// Mutably attach standard security headers to this response.
+    pub fn apply_security_headers(&mut self) {
+        self.headers.apply_security_headers();
+    }
+
     /// Serialize onto the wire. `keep_alive` determines `Connection:`
     /// emission (upstream only sends `Connection: close` when closing
     /// — HTTP/1.1 clients assume persistence).
+    ///
+    /// Defense-in-depth: skips any header whose name or value contains CR/LF/NUL.
     #[must_use]
     pub fn encode(&self, head_only: bool, keep_alive: bool) -> Vec<u8> {
         let mut out = Vec::with_capacity(256 + self.body.len());
@@ -139,22 +159,30 @@ impl Response {
         let mut saw_len = false;
         let mut saw_conn = false;
         for (n, v) in self.headers.iter() {
+            if !is_valid_header_name(n) || !is_valid_header_value(v) {
+                continue;
+            }
             if n.eq_ignore_ascii_case("content-length") {
                 saw_len = true;
             }
             if n.eq_ignore_ascii_case("connection") {
                 saw_conn = true;
             }
-            out.extend_from_slice(format!("{n}: {v}\r\n").as_bytes());
+            out.extend_from_slice(n.as_bytes());
+            out.extend_from_slice(b": ");
+            out.extend_from_slice(v.as_bytes());
+            out.extend_from_slice(b"\r\n");
         }
-        if !saw_len {
+        // RFC 9112 §6.3: omit Content-Length on 1xx informational responses.
+        let is_informational = (100..200).contains(&self.status.0);
+        if !saw_len && !is_informational {
             out.extend_from_slice(format!("Content-Length: {}\r\n", self.body.len()).as_bytes());
         }
         if !saw_conn && !keep_alive {
             out.extend_from_slice(b"Connection: close\r\n");
         }
         out.extend_from_slice(b"\r\n");
-        if !head_only {
+        if !head_only && !is_informational {
             out.extend_from_slice(&self.body);
         }
         out

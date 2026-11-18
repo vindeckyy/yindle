@@ -34,7 +34,10 @@ pub mod model;
 pub mod ops;
 pub mod tags;
 
-pub use codec::{decode, encode, MAX_COLLECTION_DEPTH, MAX_NAME_LEN, MAX_VALUE_LEN};
+pub use codec::{
+    decode, decode_with_limits, encode, DecodeLimits, MAX_ATTRIBUTES, MAX_COLLECTION_DEPTH,
+    MAX_GROUPS, MAX_NAME_LEN, MAX_STRING_LEN, MAX_TOTAL_VALUE_BYTES, MAX_VALUES, MAX_VALUE_LEN,
+};
 pub use error::CodecError;
 pub use model::{Attribute, Group, IppMessage, Text, Value};
 
@@ -507,6 +510,1113 @@ mod tests {
                 buf.push(u8::try_from(rng() % 256).unwrap_or(0));
             }
             let _ = decode(&buf);
+        }
+    }
+
+    #[test]
+    fn decode_limits_attribute_count_and_separators() {
+        let mut msg = IppMessage::new(ops::op::GET_JOBS);
+        let mut g = Group::new(tags::JOB);
+        for i in 0..5 {
+            g.attributes.push(op_attr(
+                &format!("a{i}"),
+                tags::INTEGER,
+                vec![Value::Integer(i)],
+            ));
+        }
+        msg.groups.push(g);
+        let bytes = encode(&msg).unwrap();
+
+        let limits = DecodeLimits {
+            max_attributes: 4,
+            ..DecodeLimits::default()
+        };
+        assert!(matches!(
+            decode_with_limits(&bytes, &limits),
+            Err(CodecError::LimitExceeded {
+                kind: "attribute count",
+                limit: 4,
+                ..
+            })
+        ));
+        let ok_limits = DecodeLimits {
+            max_attributes: 5,
+            ..DecodeLimits::default()
+        };
+        assert!(decode_with_limits(&bytes, &ok_limits).is_ok());
+
+        // Separators also count toward attribute limit.
+        let mut sep_bytes = vec![2, 0, 0, 0x0a, 0, 0, 0, 1, tags::JOB];
+        sep_bytes.extend(std::iter::repeat_n(tags::JOB, 6));
+        sep_bytes.push(tags::END);
+        assert!(matches!(
+            decode_with_limits(&sep_bytes, &limits),
+            Err(CodecError::LimitExceeded {
+                kind: "attribute count",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn decode_limits_values_groups_strings_bytes_and_depth() {
+        // 1setOf value limit.
+        let mut msg = IppMessage::new(ops::op::GET_PRINTER_ATTRIBUTES);
+        let mut g = Group::new(tags::OPERATION);
+        g.attributes.push(op_attr(
+            "requested-attributes",
+            tags::KEYWORD,
+            (0..6)
+                .map(|i| Value::Keyword(format!("attr-{i}").into()))
+                .collect(),
+        ));
+        msg.groups.push(g);
+        let bytes = encode(&msg).unwrap();
+        let vlim = DecodeLimits {
+            max_values: 5,
+            ..DecodeLimits::default()
+        };
+        assert!(matches!(
+            decode_with_limits(&bytes, &vlim),
+            Err(CodecError::LimitExceeded {
+                kind: "value count",
+                limit: 5,
+                ..
+            })
+        ));
+
+        // String length cap.
+        let slim = DecodeLimits {
+            max_string_len: 4,
+            ..DecodeLimits::default()
+        };
+        assert!(matches!(
+            decode_with_limits(&bytes, &slim),
+            Err(CodecError::LengthOverflow { field: "value", .. })
+        ));
+
+        // Total decoded string bytes cap.
+        let blim = DecodeLimits {
+            max_total_value_bytes: 10,
+            ..DecodeLimits::default()
+        };
+        assert!(matches!(
+            decode_with_limits(&bytes, &blim),
+            Err(CodecError::LimitExceeded {
+                kind: "total value bytes",
+                limit: 10,
+                ..
+            })
+        ));
+
+        // Group count cap.
+        let mut gmsg = IppMessage::new(ops::op::GET_PRINTER_ATTRIBUTES);
+        gmsg.groups.push(Group::new(tags::OPERATION));
+        gmsg.groups[0]
+            .attributes
+            .push(op_attr("a", tags::INTEGER, vec![Value::Integer(1)]));
+        gmsg.groups.push(Group::new(tags::JOB));
+        gmsg.groups[1]
+            .attributes
+            .push(op_attr("b", tags::INTEGER, vec![Value::Integer(2)]));
+        gmsg.groups.push(Group::new(tags::PRINTER));
+        gmsg.groups[2]
+            .attributes
+            .push(op_attr("c", tags::INTEGER, vec![Value::Integer(3)]));
+        let gbytes = encode(&gmsg).unwrap();
+        let glim = DecodeLimits {
+            max_groups: 2,
+            ..DecodeLimits::default()
+        };
+        assert!(matches!(
+            decode_with_limits(&gbytes, &glim),
+            Err(CodecError::LimitExceeded {
+                kind: "group count",
+                limit: 2,
+                ..
+            })
+        ));
+
+        // Strict preset sanity.
+        let strict = DecodeLimits::strict();
+        assert!(strict.max_attributes < MAX_ATTRIBUTES);
+        assert!(strict.max_values < MAX_VALUES);
+        assert!(strict.max_string_len < MAX_STRING_LEN);
+        assert!(decode_with_limits(&gbytes, &strict).is_ok());
+    }
+
+    #[test]
+    fn decode_collection_depth_and_member_limits() {
+        // Build nested collections deeper than limit.
+        let mut bytes = vec![2, 0, 0, 0x0b, 0, 0, 0, 1, tags::JOB];
+        bytes.extend_from_slice(&[tags::BEGIN_COLLECTION, 0, 1, b'c', 0, 0]);
+        for _ in 0..11 {
+            bytes.extend_from_slice(&[tags::MEMBERNAME, 0, 0, 0, 1, b'm']);
+            bytes.extend_from_slice(&[tags::BEGIN_COLLECTION, 0, 0, 0, 0]);
+        }
+        bytes.push(tags::END);
+        assert!(matches!(decode(&bytes), Err(CodecError::CollectionTooDeep)));
+
+        // Collection member counts against max_attributes.
+        let mut cbytes = vec![2, 0, 0, 0x0b, 0, 0, 0, 1, tags::JOB];
+        cbytes.extend_from_slice(&[tags::BEGIN_COLLECTION, 0, 1, b'c', 0, 0]);
+        cbytes.extend_from_slice(&[
+            tags::MEMBERNAME,
+            0,
+            0,
+            0,
+            1,
+            b'a',
+            tags::INTEGER,
+            0,
+            0,
+            0,
+            4,
+            0,
+            0,
+            0,
+            1,
+        ]);
+        cbytes.extend_from_slice(&[
+            tags::MEMBERNAME,
+            0,
+            0,
+            0,
+            1,
+            b'b',
+            tags::INTEGER,
+            0,
+            0,
+            0,
+            4,
+            0,
+            0,
+            0,
+            2,
+        ]);
+        cbytes.extend_from_slice(&[tags::END_COLLECTION, 0, 0, 0, 0, tags::END]);
+        let lim = DecodeLimits {
+            max_attributes: 2,
+            ..DecodeLimits::default()
+        };
+        assert!(matches!(
+            decode_with_limits(&cbytes, &lim),
+            Err(CodecError::LimitExceeded {
+                kind: "attribute count",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn all_value_types_and_model_helpers() {
+        let mut msg = IppMessage::new(ops::status::OK);
+        msg.push(
+            tags::OPERATION,
+            op_attr(
+                "charset",
+                tags::CHARSET,
+                vec![Value::Charset("utf-8".into())],
+            ),
+        );
+        msg.operation_group().attributes.push(op_attr(
+            "lang",
+            tags::LANGUAGE,
+            vec![Value::NaturalLanguage("en".into())],
+        ));
+        let g = msg.new_group_mut(tags::JOB);
+        g.attributes.extend([
+            op_attr("u", tags::UNSUPPORTED, vec![Value::Unsupported]),
+            op_attr("d", tags::DEFAULT, vec![Value::Default]),
+            op_attr("k", tags::UNKNOWN, vec![Value::Unknown]),
+            op_attr("ns", tags::NOTSETTABLE, vec![Value::NotSettable]),
+            op_attr("ad", tags::ADMINDEFINE, vec![Value::AdminDefine]),
+            op_attr("en", tags::ENUM, vec![Value::Enum(4)]),
+            op_attr("bl", tags::BOOLEAN, vec![Value::Boolean(false)]),
+            op_attr("os", tags::STRING, vec![Value::OctetString(vec![1, 2, 3])]),
+            op_attr(
+                "rs",
+                tags::RESERVED_STRING,
+                vec![Value::ReservedString(vec![4, 5])],
+            ),
+            op_attr("txt", tags::TEXT, vec![Value::Text("hello".into())]),
+            op_attr("nm", tags::NAME, vec![Value::Name("alice".into())]),
+            op_attr("us", tags::URISCHEME, vec![Value::UriScheme("ipp".into())]),
+            op_attr(
+                "mm",
+                tags::MIMETYPE,
+                vec![Value::MimeMediaType("application/pdf".into())],
+            ),
+            op_attr(
+                "tl",
+                tags::TEXTLANG,
+                vec![Value::TextWithLanguage {
+                    lang: "en".into(),
+                    text: "hi".into(),
+                }],
+            ),
+            op_attr(
+                "nl",
+                tags::NAMELANG,
+                vec![Value::NameWithLanguage {
+                    lang: "en".into(),
+                    text: "bob".into(),
+                }],
+            ),
+            op_attr(
+                "ext",
+                tags::EXTENSION,
+                vec![Value::UnknownValue {
+                    tag: tags::EXTENSION,
+                    data: vec![9, 8],
+                }],
+            ),
+        ]);
+
+        let bytes = encode(&msg).unwrap();
+        let (back, off) = decode(&bytes).unwrap();
+        assert_eq!(off, bytes.len());
+        assert_eq!(back, msg);
+
+        // Model helpers.
+        assert_eq!(back.find_all("nm").count(), 1);
+        let nm = back.find(tags::JOB, "nm").unwrap();
+        assert_eq!(nm.text().as_deref(), Some("alice"));
+        assert_eq!(nm.int(), None);
+        assert_eq!(back.find(tags::JOB, "en").unwrap().int(), Some(4));
+        assert_eq!(back.find(tags::JOB, "bl").unwrap().int(), Some(0));
+        assert_eq!(
+            back.find(tags::JOB, "tl").unwrap().text().as_deref(),
+            Some("hi")
+        );
+        assert_eq!(back.find(tags::JOB, "os").unwrap().text(), None);
+    }
+
+    #[test]
+    fn text_helpers_and_value_tags() {
+        let t = Text::from(String::from("abc"));
+        assert_eq!(t.as_bytes(), b"abc");
+        assert_eq!(t.as_ref(), b"abc");
+        assert!(!t.is_empty());
+        assert_eq!(format!("{t}"), "abc");
+        assert_eq!(t, "abc");
+        assert_eq!(t, *"abc");
+        assert!(Text::new().is_empty());
+        assert_eq!(Text::from(vec![b'x']).as_bytes(), b"x");
+
+        // Value::tag coverage for every variant including MemberName.
+        assert_eq!(Value::MemberName("m".into()).tag(), tags::MEMBERNAME);
+        assert_eq!(Value::NoValue.tag(), tags::NOVALUE);
+        assert_eq!(Value::DeleteAttr.tag(), tags::DELETEATTR);
+        assert_eq!(Value::Integer(1).tag(), tags::INTEGER);
+        assert_eq!(Value::DateTime([0; 11]).tag(), tags::DATE);
+        assert_eq!(
+            Value::Resolution {
+                x: 1,
+                y: 1,
+                units: 3
+            }
+            .tag(),
+            tags::RESOLUTION
+        );
+        assert_eq!(Value::Range { low: 1, high: 2 }.tag(), tags::RANGE);
+        assert_eq!(Value::Collection(vec![]).tag(), tags::BEGIN_COLLECTION);
+        assert_eq!(Value::Keyword("k".into()).tag(), tags::KEYWORD);
+        assert_eq!(Value::Uri("u".into()).tag(), tags::URI);
+
+        // Encode MemberName directly as an attribute value to verify encode arm.
+        let mut m2 = IppMessage::new(ops::status::OK);
+        m2.push(
+            tags::JOB,
+            op_attr("mn", tags::MEMBERNAME, vec![Value::MemberName("x".into())]),
+        );
+        assert!(encode(&m2).is_ok());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // table of malformed IPP byte vectors
+    fn decoder_error_paths_and_display() {
+        let cases: Vec<(Vec<u8>, &str)> = vec![
+            // LengthOverflow on name (>32767).
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::KEYWORD,
+                    0x80,
+                    0x01,
+                ],
+                "name length",
+            ),
+            // LengthOverflow on value (>32767).
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::KEYWORD,
+                    0,
+                    1,
+                    b'a',
+                    0x80,
+                    0x01,
+                ],
+                "value length",
+            ),
+            // Top-level END_COLLECTION with non-empty value.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::END_COLLECTION,
+                    0,
+                    0,
+                    0,
+                    1,
+                    0,
+                ],
+                "non-empty value",
+            ),
+            // Top-level MEMBERNAME with non-empty name.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::MEMBERNAME,
+                    0,
+                    1,
+                    b'a',
+                ],
+                "non-empty name",
+            ),
+            // Top-level MEMBERNAME outside collection.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::MEMBERNAME,
+                    0,
+                    0,
+                    0,
+                    1,
+                    b'a',
+                ],
+                "outside of collection",
+            ),
+            // Bad integer length.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::INTEGER,
+                    0,
+                    1,
+                    b'a',
+                    0,
+                    2,
+                    0,
+                    1,
+                    tags::END,
+                ],
+                "bad value length",
+            ),
+            // Bad boolean length.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::BOOLEAN,
+                    0,
+                    1,
+                    b'a',
+                    0,
+                    2,
+                    0,
+                    1,
+                    tags::END,
+                ],
+                "bad value length",
+            ),
+            // Bad date length.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::DATE,
+                    0,
+                    1,
+                    b'a',
+                    0,
+                    2,
+                    0,
+                    1,
+                    tags::END,
+                ],
+                "bad value length",
+            ),
+            // Bad resolution length.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::RESOLUTION,
+                    0,
+                    1,
+                    b'a',
+                    0,
+                    2,
+                    0,
+                    1,
+                    tags::END,
+                ],
+                "bad value length",
+            ),
+            // Bad range length.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::RANGE,
+                    0,
+                    1,
+                    b'a',
+                    0,
+                    2,
+                    0,
+                    1,
+                    tags::END,
+                ],
+                "bad value length",
+            ),
+            // Bad begCollection length.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::BEGIN_COLLECTION,
+                    0,
+                    1,
+                    b'a',
+                    0,
+                    1,
+                    0,
+                    tags::END,
+                ],
+                "bad value length",
+            ),
+            // Bad textWithLanguage lengths (<2, short lang, short text).
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::TEXTLANG,
+                    0,
+                    1,
+                    b'a',
+                    0,
+                    1,
+                    0,
+                    tags::END,
+                ],
+                "bad value length",
+            ),
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::TEXTLANG,
+                    0,
+                    1,
+                    b'a',
+                    0,
+                    3,
+                    0,
+                    5,
+                    0,
+                    tags::END,
+                ],
+                "bad value length",
+            ),
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::TEXTLANG,
+                    0,
+                    1,
+                    b'a',
+                    0,
+                    5,
+                    0,
+                    1,
+                    b'e',
+                    0,
+                    9,
+                    tags::END,
+                ],
+                "bad value length",
+            ),
+            // Group tag inside collection.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::BEGIN_COLLECTION,
+                    0,
+                    1,
+                    b'c',
+                    0,
+                    0,
+                    tags::JOB,
+                ],
+                "inside collection",
+            ),
+            // ZERO / OPERATION inside collection.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::BEGIN_COLLECTION,
+                    0,
+                    1,
+                    b'c',
+                    0,
+                    0,
+                    tags::OPERATION,
+                ],
+                "invalid group tag",
+            ),
+            // END_COLLECTION with named attr or non-empty value inside collection.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::BEGIN_COLLECTION,
+                    0,
+                    1,
+                    b'c',
+                    0,
+                    0,
+                    tags::END_COLLECTION,
+                    0,
+                    1,
+                ],
+                "named attribute inside collection",
+            ),
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::BEGIN_COLLECTION,
+                    0,
+                    1,
+                    b'c',
+                    0,
+                    0,
+                    tags::END_COLLECTION,
+                    0,
+                    0,
+                    0,
+                    1,
+                ],
+                "non-empty value",
+            ),
+            // MEMBERNAME empty value / overflow / invalid name inside collection.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::BEGIN_COLLECTION,
+                    0,
+                    1,
+                    b'c',
+                    0,
+                    0,
+                    tags::MEMBERNAME,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+                "empty value",
+            ),
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::BEGIN_COLLECTION,
+                    0,
+                    1,
+                    b'c',
+                    0,
+                    0,
+                    tags::MEMBERNAME,
+                    0,
+                    0,
+                    0x80,
+                    0x01,
+                ],
+                "name length",
+            ),
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::BEGIN_COLLECTION,
+                    0,
+                    1,
+                    b'c',
+                    0,
+                    0,
+                    tags::MEMBERNAME,
+                    0,
+                    0,
+                    0,
+                    2,
+                    b' ',
+                    b'!',
+                ],
+                "invalid attribute/member name",
+            ),
+            // Named value inside collection.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::BEGIN_COLLECTION,
+                    0,
+                    1,
+                    b'c',
+                    0,
+                    0,
+                    tags::INTEGER,
+                    0,
+                    1,
+                ],
+                "named attribute inside collection",
+            ),
+            // Value without member inside collection.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::BEGIN_COLLECTION,
+                    0,
+                    1,
+                    b'c',
+                    0,
+                    0,
+                    tags::INTEGER,
+                    0,
+                    0,
+                    0,
+                    4,
+                    0,
+                    0,
+                    0,
+                    1,
+                ],
+                "without a name",
+            ),
+            // Incompatible 1setOf: textlike + int, boolean + int.
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::TEXT,
+                    0,
+                    1,
+                    b'a',
+                    0,
+                    1,
+                    b'x',
+                    tags::INTEGER,
+                    0,
+                    0,
+                    0,
+                    4,
+                    0,
+                    0,
+                    0,
+                    1,
+                ],
+                "1setOf tag mismatch",
+            ),
+            (
+                vec![
+                    2,
+                    0,
+                    0,
+                    0x0b,
+                    0,
+                    0,
+                    0,
+                    1,
+                    tags::JOB,
+                    tags::BOOLEAN,
+                    0,
+                    1,
+                    b'a',
+                    0,
+                    1,
+                    1,
+                    tags::INTEGER,
+                    0,
+                    0,
+                    0,
+                    4,
+                    0,
+                    0,
+                    0,
+                    1,
+                ],
+                "1setOf tag mismatch",
+            ),
+        ];
+        for (pkt, expected) in cases {
+            let err = decode(&pkt).expect_err("must fail");
+            assert!(
+                err.to_string().contains(expected),
+                "expected '{expected}' in '{err}'"
+            );
+        }
+
+        // Top-level END_COLLECTION with zero length cleanly ends message.
+        let top_end = vec![
+            2,
+            0,
+            0,
+            0x0b,
+            0,
+            0,
+            0,
+            1,
+            tags::JOB,
+            tags::END_COLLECTION,
+            0,
+            0,
+            0,
+            0,
+        ];
+        assert!(decode(&top_end).is_ok());
+
+        // END tag inside collection terminates entire message leniently.
+        let col_end = vec![
+            2,
+            0,
+            0,
+            0x0b,
+            0,
+            0,
+            0,
+            1,
+            tags::JOB,
+            tags::BEGIN_COLLECTION,
+            0,
+            1,
+            b'c',
+            0,
+            0,
+            tags::END,
+        ];
+        assert!(decode(&col_end).is_ok());
+
+        // Range followed by integer widens integer to range.
+        let rng_int = vec![
+            2,
+            0,
+            0,
+            0x0b,
+            0,
+            0,
+            0,
+            1,
+            tags::JOB,
+            tags::RANGE,
+            0,
+            1,
+            b'r',
+            0,
+            8,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            5,
+            tags::INTEGER,
+            0,
+            0,
+            0,
+            4,
+            0,
+            0,
+            0,
+            9,
+            tags::END,
+        ];
+        let (m, _) = decode(&rng_int).unwrap();
+        assert_eq!(
+            m.find(tags::JOB, "r").unwrap().values,
+            vec![
+                Value::Range { low: 1, high: 5 },
+                Value::Range { low: 9, high: 9 }
+            ]
+        );
+
+        // Encode errors for oversized name/value/lang/text.
+        let mut big = IppMessage::new(ops::status::OK);
+        big.push(
+            tags::JOB,
+            Attribute::new(
+                Text(vec![b'a'; MAX_NAME_LEN + 1]),
+                tags::KEYWORD,
+                vec![Value::Keyword("x".into())],
+            ),
+        );
+        assert!(encode(&big)
+            .unwrap_err()
+            .to_string()
+            .contains("encode error"));
+
+        let mut bigv = IppMessage::new(ops::status::OK);
+        bigv.push(
+            tags::JOB,
+            op_attr(
+                "x",
+                tags::TEXT,
+                vec![Value::Text(Text(vec![b'a'; MAX_VALUE_LEN + 1]))],
+            ),
+        );
+        assert!(encode(&bigv).is_err());
+
+        // Display checks on remaining error variants.
+        assert!(CodecError::Truncated { needed: 2, at: 0 }
+            .to_string()
+            .contains("truncated"));
+        assert!(CodecError::CollectionTooDeep
+            .to_string()
+            .contains("10 deep"));
+        assert!(CodecError::LimitExceeded {
+            kind: "test",
+            limit: 1,
+            at: 2
+        }
+        .to_string()
+        .contains("test limit (1)"));
+    }
+
+    #[test]
+    fn tags_ops_and_status_tables_complete() {
+        // Exercise every known tag name + unknown tag.
+        for tag in 0u8..=0xff {
+            let n = tags::name(tag);
+            assert_ne!(n, "");
+        }
+        assert!(tags::is_group_tag(tags::OPERATION));
+        assert!(!tags::is_group_tag(tags::ZERO));
+        assert!(tags::is_out_of_band(tags::UNSUPPORTED));
+        assert!(tags::is_out_of_band(tags::ADMINDEFINE));
+        assert!(!tags::is_out_of_band(tags::INTEGER));
+        assert!(tags::is_textlike(tags::TEXTLANG));
+        assert!(tags::is_textlike(tags::MIMETYPE));
+        assert!(!tags::is_textlike(tags::INTEGER));
+
+        // Exercise every op name and reverse lookup.
+        for code in (0x0002u16..=0x0064).chain(0x4000..=0x4028).chain([0x9999]) {
+            let name = ops::op::name(code);
+            assert_ne!(name, "");
+            if !name.starts_with('(') {
+                assert_eq!(ops::op::value(name), Some(code), "mismatch for {name}");
+            }
+        }
+        assert_eq!(ops::op::value("0x4001"), Some(ops::op::CUPS_GET_DEFAULT));
+        assert_eq!(ops::op::value("windows-ext"), Some(ops::op::PRIVATE));
+        assert_eq!(
+            ops::op::value("Create-Job-Subscription"),
+            Some(ops::op::CREATE_JOB_SUBSCRIPTIONS)
+        );
+        assert_eq!(ops::op::value("No-Such-Op"), None);
+
+        // Exercise every status name.
+        for code in (0x0000u16..=0x0007)
+            .chain([0x0200, 0x0280])
+            .chain(0x0400..=0x0420)
+            .chain(0x049c..=0x049f)
+            .chain(0x0500..=0x050c)
+            .chain(0x1000..=0x1003)
+            .chain([0xffff])
+        {
+            assert_ne!(ops::status::name(code), "");
         }
     }
 }

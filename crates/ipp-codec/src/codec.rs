@@ -22,15 +22,83 @@ pub const MAX_NAME_LEN: usize = 32767;
 pub const MAX_VALUE_LEN: usize = 32767;
 /// Maximum collection nesting depth, matching `ipp_read_io`.
 pub const MAX_COLLECTION_DEPTH: usize = 10;
+/// Default hard cap on delimiter groups in a single decoded message.
+pub const MAX_GROUPS: usize = 4096;
+/// Default hard cap on total attributes (including separators and collection members).
+pub const MAX_ATTRIBUTES: usize = 16_384;
+/// Default hard cap on total values across all attributes in a single message.
+pub const MAX_VALUES: usize = 65_536;
+/// Default hard cap on individual decoded string/octet-string lengths.
+pub const MAX_STRING_LEN: usize = MAX_VALUE_LEN;
+/// Default hard cap on cumulative decoded string/byte value payload (8 MiB).
+pub const MAX_TOTAL_VALUE_BYTES: usize = 8 * 1024 * 1024;
 
-/// Decode `buf` into an [`IppMessage`], returning the message and the
-/// offset where document data (Print-Job/Send-Document payload) begins —
-/// i.e., the first byte after `end-of-attributes`.
+/// Safety limits applied while decoding an IPP message to bound CPU and memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeLimits {
+    /// Maximum number of attribute groups.
+    pub max_groups: usize,
+    /// Maximum total attributes (including group separators and collection members).
+    pub max_attributes: usize,
+    /// Maximum total values across all attributes.
+    pub max_values: usize,
+    /// Maximum length of any single string/octet-string value (clamped to [`MAX_VALUE_LEN`]).
+    pub max_string_len: usize,
+    /// Maximum cumulative bytes across all decoded string/octet-string values.
+    pub max_total_value_bytes: usize,
+    /// Maximum collection nesting depth.
+    pub max_collection_depth: usize,
+}
+
+impl Default for DecodeLimits {
+    fn default() -> Self {
+        Self {
+            max_groups: MAX_GROUPS,
+            max_attributes: MAX_ATTRIBUTES,
+            max_values: MAX_VALUES,
+            max_string_len: MAX_STRING_LEN,
+            max_total_value_bytes: MAX_TOTAL_VALUE_BYTES,
+            max_collection_depth: MAX_COLLECTION_DEPTH,
+        }
+    }
+}
+
+impl DecodeLimits {
+    /// Tighter limits intended for untrusted incoming client IPP requests.
+    #[must_use]
+    pub const fn strict() -> Self {
+        Self {
+            max_groups: 64,
+            max_attributes: 4096,
+            max_values: 16_384,
+            max_string_len: 4096,
+            max_total_value_bytes: 2 * 1024 * 1024,
+            max_collection_depth: MAX_COLLECTION_DEPTH,
+        }
+    }
+}
+
+/// Decode `buf` into an [`IppMessage`] using [`DecodeLimits::default()`],
+/// returning the message and the offset where document data
+/// (`Print-Job`/`Send-Document` payload) begins — i.e., the first byte after
+/// `end-of-attributes`.
 ///
 /// # Errors
 /// See [`CodecError`] for the full failure taxonomy; it deliberately
-/// mirrors the malformed-input cases libcups rejects.
+/// mirrors the malformed-input cases libcups rejects, plus safety caps.
 pub fn decode(buf: &[u8]) -> Result<(IppMessage, usize), CodecError> {
+    decode_with_limits(buf, &DecodeLimits::default())
+}
+
+/// Decode `buf` into an [`IppMessage`] enforcing custom [`DecodeLimits`].
+///
+/// # Errors
+/// Returns [`CodecError::LimitExceeded`] or [`CodecError::LengthOverflow`]
+/// when the input violates any configured cap, or a protocol error on malformed input.
+pub fn decode_with_limits(
+    buf: &[u8],
+    limits: &DecodeLimits,
+) -> Result<(IppMessage, usize), CodecError> {
     let mut d = Decoder {
         buf,
         pos: 0,
@@ -39,6 +107,11 @@ pub fn decode(buf: &[u8]) -> Result<(IppMessage, usize), CodecError> {
         code: 0,
         request_id: 0,
         msg_done: false,
+        limits: *limits,
+        group_count: 0,
+        attr_count: 0,
+        value_count: 0,
+        total_value_bytes: 0,
     };
     d.header()?;
     let groups = d.groups(0)?;
@@ -204,6 +277,12 @@ fn push_u16_name(name: &Text, out: &mut Vec<u8>) -> Result<(), CodecError> {
 }
 
 fn push_u16_data(data: &[u8], out: &mut Vec<u8>) -> Result<(), CodecError> {
+    if data.len() > MAX_VALUE_LEN {
+        return Err(CodecError::Encode(format!(
+            "value too long: {}",
+            data.len()
+        )));
+    }
     let len = u16::try_from(data.len())
         .map_err(|_| CodecError::Encode(format!("value too long: {}", data.len())))?;
     out.extend_from_slice(&len.to_be_bytes());
@@ -222,6 +301,11 @@ struct Decoder<'a> {
     /// Set when a collection member parse hit `end-of-attributes`;
     /// ends the whole message (see `members()`).
     msg_done: bool,
+    limits: DecodeLimits,
+    group_count: usize,
+    attr_count: usize,
+    value_count: usize,
+    total_value_bytes: usize,
 }
 
 enum CollectionEnd {
@@ -233,6 +317,64 @@ enum CollectionEnd {
 }
 
 impl<'a> Decoder<'a> {
+    fn count_group(&mut self, at: usize) -> Result<(), CodecError> {
+        if self.group_count >= self.limits.max_groups {
+            return Err(CodecError::LimitExceeded {
+                kind: "group count",
+                limit: self.limits.max_groups,
+                at,
+            });
+        }
+        self.group_count += 1;
+        Ok(())
+    }
+
+    fn count_attr(&mut self, at: usize) -> Result<(), CodecError> {
+        if self.attr_count >= self.limits.max_attributes {
+            return Err(CodecError::LimitExceeded {
+                kind: "attribute count",
+                limit: self.limits.max_attributes,
+                at,
+            });
+        }
+        self.attr_count += 1;
+        Ok(())
+    }
+
+    fn count_value(&mut self, at: usize) -> Result<(), CodecError> {
+        if self.value_count >= self.limits.max_values {
+            return Err(CodecError::LimitExceeded {
+                kind: "value count",
+                limit: self.limits.max_values,
+                at,
+            });
+        }
+        self.value_count += 1;
+        Ok(())
+    }
+
+    fn account_string(&mut self, len: usize, at: usize) -> Result<(), CodecError> {
+        let cap = self.limits.max_string_len.min(MAX_VALUE_LEN);
+        if len > cap {
+            return Err(CodecError::LengthOverflow {
+                field: "value",
+                len,
+                at,
+            });
+        }
+        let next = self
+            .total_value_bytes
+            .checked_add(len)
+            .filter(|&sum| sum <= self.limits.max_total_value_bytes)
+            .ok_or(CodecError::LimitExceeded {
+                kind: "total value bytes",
+                limit: self.limits.max_total_value_bytes,
+                at,
+            })?;
+        self.total_value_bytes = next;
+        Ok(())
+    }
+
     fn u8(&mut self) -> Result<u8, CodecError> {
         let b = *self
             .buf
@@ -291,12 +433,14 @@ impl<'a> Decoder<'a> {
             if tags::is_group_tag(tag) {
                 if curtag == tag {
                     // Repeated delimiter for the same group → separator.
+                    self.count_attr(at)?;
                     groups
                         .last_mut()
                         .expect("curtag set implies a group exists")
                         .attributes
                         .push(Attribute::separator());
                 } else {
+                    self.count_group(at)?;
                     groups.push(Group::new(tag));
                     curtag = tag;
                 }
@@ -346,15 +490,15 @@ impl<'a> Decoder<'a> {
                 if !is_valid_keyword(name) {
                     return Err(CodecError::InvalidName { at });
                 }
+                self.count_attr(at)?;
                 let group = groups
                     .last_mut()
                     .ok_or(CodecError::ValueWithoutAttribute { at })?;
                 group
                     .attributes
                     .push(Attribute::new(Text(name.to_vec()), tag, Vec::new()));
-                current = Some(group.attributes.len() - 1);
-                let idx = current.unwrap();
-                let group = groups.last_mut().unwrap();
+                let idx = group.attributes.len() - 1;
+                current = Some(idx);
                 let attr = &mut group.attributes[idx];
                 self.read_and_append(attr, tag, at, depth)?;
             }
@@ -418,6 +562,7 @@ impl<'a> Decoder<'a> {
             attr.tag = tag;
         }
 
+        self.count_value(at)?;
         let value = self.value(attr, tag, at, depth)?;
         attr.values.push(value);
         Ok(())
@@ -478,13 +623,17 @@ impl<'a> Decoder<'a> {
                 if attr.tag == t && n == 0 {
                     Ok(out_of_band_value(t))
                 } else {
+                    self.account_string(n, at)?;
                     if attr.tag == t {
                         attr.tag = tags::TEXT;
                     }
                     Ok(Value::Text(Text(self.take(n)?.to_vec())))
                 }
             }
-            tags::STRING => Ok(Value::OctetString(self.take(n)?.to_vec())),
+            tags::STRING => {
+                self.account_string(n, at)?;
+                Ok(Value::OctetString(self.take(n)?.to_vec()))
+            }
             tags::DATE => {
                 if n != 11 {
                     return Err(CodecError::BadValueLength {
@@ -534,7 +683,7 @@ impl<'a> Decoder<'a> {
                         at,
                     });
                 }
-                if depth >= MAX_COLLECTION_DEPTH {
+                if depth >= self.limits.max_collection_depth {
                     return Err(CodecError::CollectionTooDeep);
                 }
                 let (members, ended) = self.members(depth + 1)?;
@@ -546,6 +695,7 @@ impl<'a> Decoder<'a> {
                 Ok(Value::Collection(members))
             }
             tags::TEXTLANG | tags::NAMELANG => {
+                self.account_string(n, at)?;
                 let data = self.take(n)?;
                 let mut c = 0usize;
                 if data.len() < 2 {
@@ -558,10 +708,11 @@ impl<'a> Decoder<'a> {
                 }
                 let llen = usize::from(u16::from_be_bytes([data[c], data[c + 1]]));
                 c += 2;
-                if data.len() < c + llen + 2 {
+                let need_after_lang = c.saturating_add(llen).saturating_add(2);
+                if data.len() < need_after_lang {
                     return Err(CodecError::BadValueLength {
                         tag,
-                        expected: c + llen + 2,
+                        expected: need_after_lang,
                         got: n,
                         at,
                     });
@@ -570,10 +721,11 @@ impl<'a> Decoder<'a> {
                 c += llen;
                 let tlen = usize::from(u16::from_be_bytes([data[c], data[c + 1]]));
                 c += 2;
-                if data.len() < c + tlen {
+                let need_after_text = c.saturating_add(tlen);
+                if data.len() < need_after_text {
                     return Err(CodecError::BadValueLength {
                         tag,
-                        expected: c + tlen,
+                        expected: need_after_text,
                         got: n,
                         at,
                     });
@@ -585,14 +737,6 @@ impl<'a> Decoder<'a> {
                     Ok(Value::NameWithLanguage { lang, text })
                 }
             }
-            tags::END_COLLECTION => {
-                if n != 0 {
-                    return Err(CodecError::CollectionValueNotEmpty { at });
-                }
-                // Should be unreachable at message level (handled in
-                // `groups()`); inside `members()` handled there too.
-                Err(CodecError::InvalidGroupTag { tag, at })
-            }
             tags::TEXT
             | tags::NAME
             | tags::KEYWORD
@@ -601,6 +745,7 @@ impl<'a> Decoder<'a> {
             | tags::CHARSET
             | tags::LANGUAGE
             | tags::MIMETYPE => {
+                self.account_string(n, at)?;
                 let t = Text(self.take(n)?.to_vec());
                 Ok(match tag {
                     tags::TEXT => Value::Text(t),
@@ -613,12 +758,18 @@ impl<'a> Decoder<'a> {
                     _ => Value::MimeMediaType(t),
                 })
             }
-            tags::RESERVED_STRING => Ok(Value::ReservedString(self.take(n)?.to_vec())),
+            tags::RESERVED_STRING => {
+                self.account_string(n, at)?;
+                Ok(Value::ReservedString(self.take(n)?.to_vec()))
+            }
             // Extension and any unrecognized tag → opaque bytes.
-            _ => Ok(Value::UnknownValue {
-                tag,
-                data: self.take(n)?.to_vec(),
-            }),
+            _ => {
+                self.account_string(n, at)?;
+                Ok(Value::UnknownValue {
+                    tag,
+                    data: self.take(n)?.to_vec(),
+                })
+            }
         }
     }
 
@@ -663,10 +814,18 @@ impl<'a> Decoder<'a> {
                     if vlen == 0 {
                         return Err(CodecError::MemberNameEmptyValue { at });
                     }
+                    if vlen > MAX_NAME_LEN {
+                        return Err(CodecError::LengthOverflow {
+                            field: "name",
+                            len: vlen,
+                            at,
+                        });
+                    }
                     let name = self.take(vlen)?;
                     if !is_valid_keyword(name) {
                         return Err(CodecError::InvalidName { at });
                     }
+                    self.count_attr(at)?;
                     members.push(Attribute::new(Text(name.to_vec()), tags::ZERO, Vec::new()));
                     current = Some(members.len() - 1);
                 }

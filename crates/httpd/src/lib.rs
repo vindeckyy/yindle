@@ -5,31 +5,40 @@
 //! `Transfer-Encoding: chunked` and `Content-Length` request bodies,
 //! `Expect: 100-continue`, persistent connections (HTTP/1.1 default,
 //! HTTP/1.0 with `Connection: keep-alive`), `Host` enforcement on 1.1,
-//! and an RFC 2817 `Upgrade: TLS/1.x` seam (the daemon wraps the
-//! transport when the config demands encryption).
+//! and an RFC 2817 `Upgrade: TLS/1.x` seam with read-ahead buffer
+//! preservation.
 //!
-//! Transport-agnostic: works over any `AsyncRead + AsyncWrite`, so the
-//! same code serves plain TCP, unix sockets, and (later) rustls
-//! streams.
+//! Hardened against HTTP request smuggling, Slowloris header/body `DoS`,
+//! response splitting (CRLF injection), DNS rebinding (`Host` validation),
+//! and large-body OOM (configurable `max_body` + streaming disk spooling).
 
 #![forbid(unsafe_code)]
-#![warn(clippy::pedantic)]
 
 mod headers;
 mod request;
 mod response;
 mod server;
 
-pub use headers::Headers;
-pub use request::{Body, HttpVersion, Method, Request};
-pub use response::{Response, StatusCode};
-pub use server::{serve_connection, ServeError, ServerOptions};
+pub use headers::{is_valid_header_name, is_valid_header_value, HeaderError, Headers};
+pub use request::{Body, HttpVersion, Method, Request, SpooledBody};
+pub use response::{reason_phrase, Response, StatusCode};
+pub use server::{
+    read_body, serve_connection, serve_connection_with_config, validate_host, ConnectionOutcome,
+    HostValidator, PrefixedStream, ServeError, ServerConfig, ServerOptions,
+};
 
-/// Maximum request line + header block size (cupsd uses `HTTP_MAX_VALUE`
-/// 256 per line; total header block is bounded at 32 KiB here — the
-/// practical limit upstream applies via `MaxRequestSize` is on the body).
+/// Maximum request line + header block size (32 KiB).
 pub const MAX_HEADER_BLOCK: usize = 32 * 1024;
 
-/// Maximum body we will spool when `MaxRequestSize` is not configured
-/// (upstream default 0 = unlimited; we retain that).
-pub const DEFAULT_MAX_BODY: usize = 0;
+/// Default maximum request body size (64 MiB) when unspecified.
+pub const DEFAULT_MAX_BODY: usize = 64 * 1024 * 1024;
+
+/// Default threshold (1 MiB) above which [`ServerConfig`] spools request bodies
+/// to a `0600` temporary file instead of keeping them in RAM.
+pub const DEFAULT_SPOOL_THRESHOLD: usize = 1024 * 1024;
+
+/// Maximum trailer lines accepted after a chunked request body.
+pub const MAX_TRAILER_LINES: usize = 64;
+
+/// Maximum cumulative bytes across all chunked trailer lines (8 KiB).
+pub const MAX_TRAILER_BYTES: usize = 8 * 1024;
