@@ -299,7 +299,9 @@ name = "cupsd"
 version = "0.1.0"
 dependencies = [
  "authn",
+ "authz",
  "cups-config",
+ "cups-dbus",
  "cups-log",
  "cups-tls",
  "dnssd",
