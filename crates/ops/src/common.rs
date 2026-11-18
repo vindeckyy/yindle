@@ -15,8 +15,10 @@
 
 use ipp_codec::{tags, Attribute, IppMessage, Value};
 use printer::{ipp_datetime, now, ptype, state_reasons_attr, Printer};
+use std::collections::HashSet;
 
-use crate::dispatch::Ctx;
+use crate::ctx::Ctx;
+use crate::ppd::{load_queue_ppd_capabilities, PpdCapabilities};
 
 /// `ippNewResponse()` — response message seeded from the request:
 /// same version + request-id, `attributes-charset` echoed from the
@@ -148,13 +150,6 @@ fn is_job_template(name: &str) -> bool {
 }
 
 /// `cupsArrayFind(ra, name)` — `requested-attributes` filter predicate.
-/// The list may name individual attributes *or* an attribute group:
-/// `all` (everything), `printer-description` (non-template attrs),
-/// `job-template` (job-template attrs), `printer-defaults`, …
-/// When `requested-attributes` is absent (`ra` is `None`), or when it
-/// only names a *group* (`all`, `job-template`, …), the huge opt-in
-/// media database collections are still withheld — they are emitted only
-/// when named literally, matching upstream.
 pub fn wants(ra: &Option<Vec<String>>, name: &str) -> bool {
     let opt_in_only = matches!(name, "media-col-database" | "media-size-database");
     match ra {
@@ -185,26 +180,53 @@ fn web_uri(ctx: &Ctx, path: &str) -> String {
     format!("{scheme}://{}:{}{}", ctx.hostname, ctx.port, path)
 }
 
-/// `copy_attrs()` — copy stored attrs to `group`, filtered by
-/// `requested-attributes`. Skips our op-only attrs.
-pub fn copy_attrs(
-    resp: &mut IppMessage,
-    group_tag: u8,
+/// Push attributes filtered by `requested-attributes`, deduplicating names
+/// within the current printer's emission so no duplicate attribute can ever be
+/// produced on the wire.
+fn copy_attrs_dedup(
+    group: &mut ipp_codec::Group,
     attrs: &[Attribute],
     ra: &Option<Vec<String>>,
+    seen: &mut HashSet<String>,
 ) {
     for a in attrs {
         if a.is_separator() {
             continue;
         }
-        if wants(ra, a.name.as_str().as_ref()) {
-            resp.push(group_tag, a.clone());
+        let key = a.name.as_str().into_owned();
+        if wants(ra, &key) && seen.insert(key) {
+            group.attributes.push(a.clone());
         }
     }
 }
 
-/// `copy_printer_attrs()` — the full port: dynamic per-request attrs
-/// (computed), then the stored `printer->attrs`, then `CommonData`.
+/// Compute the supported `document-format` list for a printer (honoring queue
+/// PPD `*cupsFilter`/`*cupsFilter2` declarations plus standard driverless types).
+#[must_use]
+pub fn printer_supported_formats(p: &Printer, ctx: &Ctx) -> Vec<String> {
+    let mut formats = vec![
+        "application/octet-stream".to_string(),
+        "application/pdf".to_string(),
+        "application/postscript".to_string(),
+        "image/jpeg".to_string(),
+        "image/png".to_string(),
+        "image/pwg-raster".to_string(),
+        "image/urf".to_string(),
+        "text/plain".to_string(),
+    ];
+    if let Some(caps) = load_queue_ppd_capabilities(&ctx.server_root, &p.name) {
+        for f in caps.filter_formats {
+            if !formats.iter().any(|x| x.eq_ignore_ascii_case(&f)) {
+                formats.push(f);
+            }
+        }
+    }
+    formats
+}
+
+/// `copy_printer_attrs()` — dynamic per-request attrs, stored printer attrs
+/// (honoring queue PPD capabilities where present), and `CommonData`, with
+/// strict per-printer attribute uniqueness (zero duplicates).
 pub fn copy_printer_attrs(
     resp: &mut IppMessage,
     p: &Printer,
@@ -214,160 +236,209 @@ pub fn copy_printer_attrs(
 ) {
     let curtime = now();
     let is_default = ctx.reg().default.as_deref() == Some(p.name.as_str());
-    let pr = tags::PRINTER;
+    let ppd_caps = load_queue_ppd_capabilities(&ctx.server_root, &p.name);
+    let mut seen: HashSet<String> = HashSet::with_capacity(128);
+    let _ = resp.new_group_mut(tags::PRINTER);
 
-    let add = |resp: &mut IppMessage, name: &str, tag: u8, v: Value| {
-        if wants(ra, name) {
-            resp.push(pr, Attribute::new(name, tag, vec![v]));
+    let mut push_attr = |resp: &mut IppMessage, attr: Attribute| {
+        let name = attr.name.as_str().into_owned();
+        if wants(ra, &name) && seen.insert(name) {
+            if let Some(g) = resp.groups.last_mut().filter(|g| g.tag == tags::PRINTER) {
+                g.attributes.push(attr);
+            }
         }
     };
 
-    if wants(ra, "marker-change-time") && p.marker_time != 0 {
-        add(
+    if p.marker_time != 0 {
+        push_attr(
             resp,
-            "marker-change-time",
-            tags::INTEGER,
-            Value::Integer(p.marker_time as i32),
+            Attribute::new(
+                "marker-change-time",
+                tags::INTEGER,
+                vec![Value::Integer(p.marker_time as i32)],
+            ),
         );
     }
 
-    // member-uris for classes.
-    if !p.members.is_empty() && wants(ra, "member-uris") {
-        let vals: Vec<Value> = p
+    // member-uris & member-names for classes.
+    if !p.members.is_empty() {
+        let reg = ctx.reg();
+        let uri_vals: Vec<Value> = p
             .members
             .iter()
             .map(|m| {
-                let member_is_class = ctx
-                    .reg()
-                    .printers
-                    .get(m.as_str())
-                    .is_some_and(Printer::is_class);
+                let member_is_class = reg.printers.get(m.as_str()).is_some_and(Printer::is_class);
                 Value::Uri(queue_uri(ctx, member_is_class, m).into())
             })
             .collect();
-        resp.push(pr, Attribute::new("member-uris", tags::URI, vals));
-    }
-    if !p.members.is_empty() && wants(ra, "member-names") {
-        let vals: Vec<Value> = p
+        drop(reg);
+        push_attr(resp, Attribute::new("member-uris", tags::URI, uri_vals));
+        let name_vals: Vec<Value> = p
             .members
             .iter()
             .map(|m| Value::Name(m.as_str().into()))
             .collect();
-        resp.push(pr, Attribute::new("member-names", tags::NAME, vals));
+        push_attr(resp, Attribute::new("member-names", tags::NAME, name_vals));
     }
 
+    // printer-alert / printer-alert-description emitted ONCE (printer value or default).
     if let Some(a) = &p.alert {
-        add(
+        push_attr(
             resp,
-            "printer-alert",
-            tags::STRING,
-            Value::OctetString(a.clone().into_bytes()),
+            Attribute::new(
+                "printer-alert",
+                tags::STRING,
+                vec![Value::OctetString(a.clone().into_bytes())],
+            ),
+        );
+    } else {
+        push_attr(
+            resp,
+            Attribute::new(
+                "printer-alert",
+                tags::STRING,
+                vec![Value::OctetString(vec![
+                    0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                ])],
+            ),
         );
     }
     if let Some(a) = &p.alert_description {
-        add(
+        push_attr(
             resp,
-            "printer-alert-description",
-            tags::TEXT,
-            Value::Text(a.as_str().into()),
+            Attribute::new(
+                "printer-alert-description",
+                tags::TEXT,
+                vec![Value::Text(a.as_str().into())],
+            ),
+        );
+    } else {
+        push_attr(
+            resp,
+            Attribute::new(
+                "printer-alert-description",
+                tags::TEXT,
+                vec![Value::Text("ready".into())],
+            ),
         );
     }
 
-    add(
+    push_attr(
         resp,
-        "printer-config-change-date-time",
-        tags::DATE,
-        ipp_datetime(p.config_time),
+        Attribute::new(
+            "printer-config-change-date-time",
+            tags::DATE,
+            vec![ipp_datetime(p.config_time)],
+        ),
     );
-    add(
+    push_attr(
         resp,
-        "printer-config-change-time",
-        tags::INTEGER,
-        Value::Integer(p.config_time as i32),
+        Attribute::new(
+            "printer-config-change-time",
+            tags::INTEGER,
+            vec![Value::Integer(p.config_time as i32)],
+        ),
     );
-    add(
+    push_attr(
         resp,
-        "printer-current-time",
-        tags::DATE,
-        ipp_datetime(curtime),
+        Attribute::new(
+            "printer-current-time",
+            tags::DATE,
+            vec![ipp_datetime(curtime)],
+        ),
     );
 
-    if wants(ra, "printer-dns-sd-name") {
-        match &p.reg_name {
-            Some(r) => add(
-                resp,
+    match &p.reg_name {
+        Some(r) => push_attr(
+            resp,
+            Attribute::new(
                 "printer-dns-sd-name",
                 tags::NAME,
-                Value::Name(r.as_str().into()),
+                vec![Value::Name(r.as_str().into())],
             ),
-            None => add(resp, "printer-dns-sd-name", tags::NOVALUE, Value::NoValue),
-        }
-    }
-    if let Some(ep) = &p.error_policy {
-        add(
+        ),
+        None => push_attr(
             resp,
-            "printer-error-policy",
-            tags::NAME,
-            Value::Name(ep.as_str().into()),
+            Attribute::new("printer-dns-sd-name", tags::NOVALUE, vec![Value::NoValue]),
+        ),
+    }
+
+    if let Some(ep) = &p.error_policy {
+        push_attr(
+            resp,
+            Attribute::new(
+                "printer-error-policy",
+                tags::NAME,
+                vec![Value::Name(ep.as_str().into())],
+            ),
         );
     }
-    if wants(ra, "printer-error-policy-supported") {
-        if p.is_class() {
-            add(
-                resp,
+    if p.is_class() {
+        push_attr(
+            resp,
+            Attribute::new(
                 "printer-error-policy-supported",
                 tags::NAME,
-                Value::Name("retry-current-job".into()),
-            );
-        } else {
-            let errs = [
-                "abort-job",
-                "retry-current-job",
-                "retry-job",
-                "stop-printer",
-            ];
-            resp.push(
-                pr,
-                Attribute::new(
-                    "printer-error-policy-supported",
-                    tags::NAME,
-                    errs.iter().map(|e| Value::Name((*e).into())).collect(),
-                ),
-            );
-        }
-    }
-    if wants(ra, "printer-icons") {
-        add(
+                vec![Value::Name("retry-current-job".into())],
+            ),
+        );
+    } else {
+        let errs = [
+            "abort-job",
+            "retry-current-job",
+            "retry-job",
+            "stop-printer",
+        ];
+        push_attr(
             resp,
-            "printer-icons",
-            tags::URI,
-            Value::Uri(web_uri(ctx, &format!("/icons/{}.png", p.name)).into()),
+            Attribute::new(
+                "printer-error-policy-supported",
+                tags::NAME,
+                errs.iter().map(|e| Value::Name((*e).into())).collect(),
+            ),
         );
     }
-    add(
+
+    push_attr(
         resp,
-        "printer-is-accepting-jobs",
-        tags::BOOLEAN,
-        Value::Boolean(p.accepting),
+        Attribute::new(
+            "printer-icons",
+            tags::URI,
+            vec![Value::Uri(
+                web_uri(ctx, &format!("/icons/{}.png", p.name)).into(),
+            )],
+        ),
     );
-    add(
+    push_attr(
         resp,
-        "printer-is-shared",
-        tags::BOOLEAN,
-        Value::Boolean(p.shared),
+        Attribute::new(
+            "printer-is-accepting-jobs",
+            tags::BOOLEAN,
+            vec![Value::Boolean(p.accepting)],
+        ),
     );
-    add(
+    push_attr(
         resp,
-        "printer-is-temporary",
-        tags::BOOLEAN,
-        Value::Boolean(p.temporary),
+        Attribute::new(
+            "printer-is-shared",
+            tags::BOOLEAN,
+            vec![Value::Boolean(p.shared)],
+        ),
     );
-    if wants(ra, "printer-more-info") {
-        add(
-            resp,
+    push_attr(
+        resp,
+        Attribute::new(
+            "printer-is-temporary",
+            tags::BOOLEAN,
+            vec![Value::Boolean(p.temporary)],
+        ),
+    );
+    push_attr(
+        resp,
+        Attribute::new(
             "printer-more-info",
             tags::URI,
-            Value::Uri(
+            vec![Value::Uri(
                 web_uri(
                     ctx,
                     &format!(
@@ -377,96 +448,118 @@ pub fn copy_printer_attrs(
                     ),
                 )
                 .into(),
-            ),
-        );
-    }
-    if let Some(op) = &p.op_policy {
-        add(
-            resp,
+            )],
+        ),
+    );
+
+    let effective_policy = ctx.effective_policy_name(Some(p));
+    push_attr(
+        resp,
+        Attribute::new(
             "printer-op-policy",
             tags::NAME,
-            Value::Name(op.as_str().into()),
-        );
-    }
-    add(resp, "printer-state", tags::ENUM, Value::Enum(p.state));
-    add(
-        resp,
-        "printer-state-change-date-time",
-        tags::DATE,
-        ipp_datetime(p.state_time),
+            vec![Value::Name(effective_policy.into())],
+        ),
     );
-    add(
+
+    push_attr(
         resp,
-        "printer-state-change-time",
-        tags::INTEGER,
-        Value::Integer(p.state_time as i32),
+        Attribute::new("printer-state", tags::ENUM, vec![Value::Enum(p.state)]),
     );
-    add(
+    push_attr(
         resp,
-        "printer-state-message",
-        tags::TEXT,
-        Value::Text(p.state_message.as_str().into()),
+        Attribute::new(
+            "printer-state-change-date-time",
+            tags::DATE,
+            vec![ipp_datetime(p.state_time)],
+        ),
     );
-    if wants(ra, "printer-state-reasons") {
-        resp.push(pr, state_reasons_attr(p));
-    }
-    if wants(ra, "printer-strings-uri") {
-        add(
-            resp,
+    push_attr(
+        resp,
+        Attribute::new(
+            "printer-state-change-time",
+            tags::INTEGER,
+            vec![Value::Integer(p.state_time as i32)],
+        ),
+    );
+    push_attr(
+        resp,
+        Attribute::new(
+            "printer-state-message",
+            tags::TEXT,
+            vec![Value::Text(p.state_message.as_str().into())],
+        ),
+    );
+    push_attr(resp, state_reasons_attr(p));
+    push_attr(
+        resp,
+        Attribute::new(
             "printer-strings-uri",
             tags::URI,
-            Value::Uri(web_uri(ctx, &format!("/strings/{}.strings", ctx.language)).into()),
-        );
-    }
-    if wants(ra, "printer-type") {
-        add(
-            resp,
+            vec![Value::Uri(
+                web_uri(ctx, &format!("/strings/{}.strings", ctx.language)).into(),
+            )],
+        ),
+    );
+    push_attr(
+        resp,
+        Attribute::new(
             "printer-type",
             tags::ENUM,
-            Value::Enum(p.effective_ptype(is_default)),
-        );
-    }
-    add(
-        resp,
-        "printer-up-time",
-        tags::INTEGER,
-        Value::Integer(curtime as i32),
+            vec![Value::Enum(p.effective_ptype(is_default))],
+        ),
     );
-    if wants(ra, "printer-uri-supported") {
-        add(
-            resp,
+    push_attr(
+        resp,
+        Attribute::new(
+            "printer-up-time",
+            tags::INTEGER,
+            vec![Value::Integer(curtime as i32)],
+        ),
+    );
+    push_attr(
+        resp,
+        Attribute::new(
             "printer-uri-supported",
             tags::URI,
-            Value::Uri(queue_uri(ctx, p.is_class(), &p.name).into()),
-        );
-    }
-    add(
-        resp,
-        "queued-job-count",
-        tags::INTEGER,
-        Value::Integer(queued_job_count),
+            vec![Value::Uri(queue_uri(ctx, p.is_class(), &p.name).into())],
+        ),
     );
-    add(
+    push_attr(
         resp,
-        "uri-security-supported",
-        tags::KEYWORD,
-        Value::Keyword(if ctx.is_encrypted { "tls" } else { "none" }.into()),
+        Attribute::new(
+            "queued-job-count",
+            tags::INTEGER,
+            vec![Value::Integer(queued_job_count)],
+        ),
     );
-    if wants(ra, "uri-authentication-supported") {
-        add(
-            resp,
+    push_attr(
+        resp,
+        Attribute::new(
+            "uri-security-supported",
+            tags::KEYWORD,
+            vec![Value::Keyword(
+                if ctx.is_encrypted { "tls" } else { "none" }.into(),
+            )],
+        ),
+    );
+    push_attr(
+        resp,
+        Attribute::new(
             "uri-authentication-supported",
             tags::KEYWORD,
-            Value::Keyword(ctx.uri_authentication.as_str().into()),
-        );
-    }
+            vec![Value::Keyword(ctx.uri_authentication.as_str().into())],
+        ),
+    );
 
-    // Stored printer attrs (printer->attrs) — for P1 the static set.
-    copy_attrs(resp, pr, &stored_attrs(p, ctx), ra);
-
-    // CommonData — the shared "every queue reports these" block.
+    // Stored printer attrs (incorporating PPD capabilities where present) and
+    // CommonData — shared server capabilities, deduplicated against printer attrs.
+    let stored = stored_attrs(p, ctx, ppd_caps.as_ref());
     let cd = common_data(ctx);
-    copy_attrs(resp, pr, &cd, ra);
+    if let Some(g) = resp.groups.last_mut().filter(|g| g.tag == tags::PRINTER) {
+        copy_attrs_dedup(g, &stored, ra, &mut seen);
+        copy_attrs_dedup(g, &cd, ra, &mut seen);
+    }
 }
 
 fn add1(v: &mut Vec<Attribute>, name: &str, tag: u8, val: Value) {
@@ -476,19 +569,39 @@ fn addn(v: &mut Vec<Attribute>, name: &str, tag: u8, vals: Vec<Value>) {
     v.push(Attribute::new(name, tag, vals));
 }
 
-/// `printer->attrs` — the stored attribute set `cupsdSetPrinterAttrs`
-/// builds for a queue. Driverless-first: this is the raw/basic set;
-/// PPD-derived attrs join at P7.
-fn stored_attrs(p: &Printer, _ctx: &Ctx) -> Vec<Attribute> {
+/// Per-queue stored attributes, incorporating PPD capabilities where present.
+fn stored_attrs(p: &Printer, ctx: &Ctx, ppd_caps: Option<&PpdCapabilities>) -> Vec<Attribute> {
     let mut v: Vec<Attribute> = Vec::with_capacity(64);
     let kw = |s: &str| Value::Keyword(s.into());
 
+    let color_supported = ppd_caps
+        .and_then(|c| c.color_device)
+        .unwrap_or(p.ptype & ptype::COLOR != 0);
     add1(
         &mut v,
         "color-supported",
         tags::BOOLEAN,
-        Value::Boolean(p.ptype & ptype::COLOR != 0),
+        Value::Boolean(color_supported),
     );
+    if color_supported {
+        addn(
+            &mut v,
+            "print-color-mode-supported",
+            tags::KEYWORD,
+            ["auto", "color", "monochrome"]
+                .iter()
+                .map(|s| kw(s))
+                .collect(),
+        );
+    } else {
+        addn(
+            &mut v,
+            "print-color-mode-supported",
+            tags::KEYWORD,
+            ["auto", "monochrome"].iter().map(|s| kw(s)).collect(),
+        );
+    }
+
     if !p.uuid.is_empty() {
         add1(
             &mut v,
@@ -497,19 +610,16 @@ fn stored_attrs(p: &Printer, _ctx: &Ctx) -> Vec<Attribute> {
             Value::Uri(p.uuid.as_str().into()),
         );
     }
+
+    let doc_formats = printer_supported_formats(p, ctx);
     addn(
         &mut v,
         "document-format-supported",
         tags::MIMETYPE,
-        vec![
-            Value::MimeMediaType("application/octet-stream".into()),
-            Value::MimeMediaType("application/pdf".into()),
-            Value::MimeMediaType("application/postscript".into()),
-            Value::MimeMediaType("image/jpeg".into()),
-            Value::MimeMediaType("image/png".into()),
-            Value::MimeMediaType("image/pwg-raster".into()),
-            Value::MimeMediaType("image/urf".into()),
-        ],
+        doc_formats
+            .into_iter()
+            .map(|f| Value::MimeMediaType(f.into()))
+            .collect(),
     );
     add1(
         &mut v,
@@ -523,9 +633,7 @@ fn stored_attrs(p: &Printer, _ctx: &Ctx) -> Vec<Attribute> {
         tags::URI,
         Value::Uri(p.device_uri.as_str().into()),
     );
-    // `printer-device-id` is per-queue — a stored `Option printer-device-id`
-    // (set by driver selection / Set-Printer-Attributes) wins over the
-    // driverless default.
+
     let devid = p
         .options
         .iter()
@@ -561,6 +669,13 @@ fn stored_attrs(p: &Printer, _ctx: &Ctx) -> Vec<Attribute> {
             tags::URI,
             Value::Uri(g.as_str().into()),
         );
+    } else {
+        add1(
+            &mut v,
+            "printer-geo-location",
+            tags::UNKNOWN,
+            Value::Unknown,
+        );
     }
     add1(
         &mut v,
@@ -570,8 +685,6 @@ fn stored_attrs(p: &Printer, _ctx: &Ctx) -> Vec<Attribute> {
             p.make_model
                 .as_deref()
                 .unwrap_or_else(|| {
-                    // Upstream falls back to a driver/backend-derived name;
-                    // for a bare queue it reports the device-uri scheme.
                     p.device_uri
                         .split("://")
                         .next()
@@ -581,22 +694,18 @@ fn stored_attrs(p: &Printer, _ctx: &Ctx) -> Vec<Attribute> {
                 .into(),
         ),
     );
-    if let Some(o) = &p.organization {
-        add1(
-            &mut v,
-            "printer-organization",
-            tags::TEXT,
-            Value::Text(o.as_str().into()),
-        );
-    }
-    if let Some(o) = &p.organizational_unit {
-        add1(
-            &mut v,
-            "printer-organizational-unit",
-            tags::TEXT,
-            Value::Text(o.as_str().into()),
-        );
-    }
+    add1(
+        &mut v,
+        "printer-organization",
+        tags::TEXT,
+        Value::Text(p.organization.as_deref().unwrap_or("").into()),
+    );
+    add1(
+        &mut v,
+        "printer-organizational-unit",
+        tags::TEXT,
+        Value::Text(p.organizational_unit.as_deref().unwrap_or("").into()),
+    );
     if !p.auth_info_required.is_empty() {
         addn(
             &mut v,
@@ -617,6 +726,95 @@ fn stored_attrs(p: &Printer, _ctx: &Ctx) -> Vec<Attribute> {
         tags::INTEGER,
         Value::Integer(p.printer_id),
     );
+
+    // Per-queue quotas & banners.
+    add1(
+        &mut v,
+        "job-quota-period",
+        tags::INTEGER,
+        Value::Integer(p.quota_period),
+    );
+    add1(
+        &mut v,
+        "job-k-limit",
+        tags::INTEGER,
+        Value::Integer(p.k_limit),
+    );
+    add1(
+        &mut v,
+        "job-page-limit",
+        tags::INTEGER,
+        Value::Integer(p.page_limit),
+    );
+    if ctx.classification.is_empty() {
+        addn(
+            &mut v,
+            "job-sheets-default",
+            tags::NAME,
+            vec![
+                Value::Name(p.job_sheets.0.as_str().into()),
+                Value::Name(p.job_sheets.1.as_str().into()),
+            ],
+        );
+    } else {
+        add1(
+            &mut v,
+            "job-sheets-default",
+            tags::NAME,
+            Value::Name(ctx.classification.as_str().into()),
+        );
+    }
+
+    // Honor PPD media/sides/resolutions when present on the queue.
+    if let Some(caps) = ppd_caps {
+        if let Some(ref dm) = caps.default_media {
+            add1(&mut v, "media-default", tags::KEYWORD, kw(dm));
+        }
+        if !caps.media_supported.is_empty() {
+            addn(
+                &mut v,
+                "media-supported",
+                tags::KEYWORD,
+                caps.media_supported.iter().map(|m| kw(m)).collect(),
+            );
+        }
+        if let Some(ref ds) = caps.default_duplex {
+            add1(&mut v, "sides-default", tags::KEYWORD, kw(ds));
+        }
+        if let Some(duplex) = caps.duplex_supported {
+            let sides: &[&str] = if duplex {
+                &["one-sided", "two-sided-long-edge", "two-sided-short-edge"]
+            } else {
+                &["one-sided"]
+            };
+            addn(
+                &mut v,
+                "sides-supported",
+                tags::KEYWORD,
+                sides.iter().map(|s| kw(s)).collect(),
+            );
+        }
+        if let Some((x, y)) = caps.default_resolution {
+            add1(
+                &mut v,
+                "printer-resolution-default",
+                tags::RESOLUTION,
+                Value::Resolution { x, y, units: 3 },
+            );
+        }
+        if !caps.resolutions.is_empty() {
+            addn(
+                &mut v,
+                "printer-resolution-supported",
+                tags::RESOLUTION,
+                caps.resolutions
+                    .iter()
+                    .map(|&(x, y)| Value::Resolution { x, y, units: 3 })
+                    .collect(),
+            );
+        }
+    }
+
     addn(
         &mut v,
         "job-creation-attributes-supported",
@@ -642,6 +840,7 @@ fn stored_attrs(p: &Printer, _ctx: &Ctx) -> Vec<Attribute> {
             kw("sides"),
         ],
     );
+
     if !p.marker_names.is_empty() {
         addn(
             &mut v,
@@ -714,7 +913,9 @@ fn stored_attrs(p: &Printer, _ctx: &Ctx) -> Vec<Attribute> {
 }
 
 /// `CommonData` — `cupsdCreateCommonData()`. Config-dependent values
-/// come from `ctx` (which carries the loaded `Config`).
+/// come from `ctx`. Never duplicates per-printer attributes (`printer-alert*`,
+/// `printer-geo-location`, `printer-organization*`) or resolutions, and never
+/// fabricates bogus `https://localhost/supplies` URIs.
 #[must_use]
 pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
     const K_SUPPORTED: i32 = i32::MAX;
@@ -759,7 +960,10 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
         &mut v,
         "ipp-versions-supported",
         tags::KEYWORD,
-        ["1.0", "1.1", "2.0", "2.1"].iter().map(|s| kw(s)).collect(),
+        ["1.0", "1.1", "2.0", "2.1", "2.2"]
+            .iter()
+            .map(|s| kw(s))
+            .collect(),
     );
     add1(
         &mut v,
@@ -911,8 +1115,6 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
         .map(|s| kw(s))
         .collect(),
     );
-    // `media-col-default` — the resolved default media collection
-    // (na_letter_8.5x11in, 3 mm margins). Nested `media-size` collection.
     let mut media_col = Vec::new();
     media_col.push(Attribute::new(
         "media-size",
@@ -976,14 +1178,15 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
         tags::KEYWORD,
         kw("process-job"),
     );
-    // Job-template defaults + the media database. `media-col-database`
-    // is a `1setOf collection` listing the media the printer can handle.
     add1(&mut v, "copies-default", tags::INTEGER, Value::Integer(1));
     add1(
         &mut v,
         "copies-supported",
         tags::RANGE,
-        Value::Range { low: 1, high: 9999 },
+        Value::Range {
+            low: 1,
+            high: ctx.max_copies.max(1),
+        },
     );
     add1(
         &mut v,
@@ -1024,9 +1227,9 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
         "media-col-database",
         tags::BEGIN_COLLECTION,
         vec![
-            media_col_db(21590, 27940), // na_letter_8.5x11in
-            media_col_db(21590, 35560), // na_legal_8.5x14in
-            media_col_db(21000, 29700), // iso_a4_210x297mm
+            media_col_db(21590, 27940),
+            media_col_db(21590, 35560),
+            media_col_db(21000, 29700),
         ],
     );
     add1(
@@ -1039,7 +1242,7 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
         &mut v,
         "orientation-requested-default",
         tags::ENUM,
-        Value::Enum(3), // portrait
+        Value::Enum(3),
     );
     add1(&mut v, "print-quality-default", tags::ENUM, Value::Enum(4));
     add1(
@@ -1058,7 +1261,6 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
             .map(|s| kw(s))
             .collect(),
     );
-    // PWG 5100.12 §6.2 required printer/job-template attributes.
     add1(&mut v, "output-bin-default", tags::KEYWORD, kw("face-down"));
     add1(
         &mut v,
@@ -1072,10 +1274,15 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
         tags::ENUM,
         vec![Value::Enum(3), Value::Enum(4), Value::Enum(5)],
     );
+    let res300 = Value::Resolution {
+        x: 300,
+        y: 300,
+        units: 3,
+    };
     let res600 = Value::Resolution {
         x: 600,
         y: 600,
-        units: 3, // dots-per-inch
+        units: 3,
     };
     add1(
         &mut v,
@@ -1087,7 +1294,7 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
         &mut v,
         "printer-resolution-supported",
         tags::RESOLUTION,
-        vec![res600.clone(), res600],
+        vec![res300, res600],
     );
     addn(
         &mut v,
@@ -1128,8 +1335,6 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
         tags::INTEGER,
         Value::Integer(30),
     );
-    // ── IPP Everywhere (PWG 5100.14) required attributes ─────────────
-    // Job hold/sheets.
     add1(
         &mut v,
         "job-hold-until-default",
@@ -1142,13 +1347,6 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
         tags::INTEGER,
         Value::Integer(50),
     );
-    add1(
-        &mut v,
-        "job-sheets-default",
-        tags::NAME,
-        Value::Name("none".into()),
-    );
-    // Ready media: the media-col actually loaded + its names.
     addn(
         &mut v,
         "media-col-ready",
@@ -1170,7 +1368,6 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
             .map(|s| kw(s))
             .collect(),
     );
-    // Media margins (hundredths of mm).
     for (name, mm) in [
         ("media-bottom-margin-supported", 635),
         ("media-top-margin-supported", 635),
@@ -1196,15 +1393,6 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
         .iter()
         .map(|s| kw(s))
         .collect(),
-    );
-    addn(
-        &mut v,
-        "print-color-mode-supported",
-        tags::KEYWORD,
-        ["auto", "color", "monochrome"]
-            .iter()
-            .map(|s| kw(s))
-            .collect(),
     );
     for (base, kwv) in [
         ("print-content-optimize", "auto"),
@@ -1250,7 +1438,6 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
             .map(|s| kw(s))
             .collect(),
     );
-    // Notifications.
     addn(
         &mut v,
         "notify-events-default",
@@ -1261,9 +1448,8 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
         &mut v,
         "notify-lease-duration-default",
         tags::INTEGER,
-        Value::Integer(ctx.max_lease_duration),
+        Value::Integer(ctx.default_lease_duration),
     );
-    // Identify + feature + misc printer-description.
     addn(
         &mut v,
         "identify-actions-default",
@@ -1297,64 +1483,14 @@ pub fn common_data(ctx: &Ctx) -> Vec<Attribute> {
         tags::TEXT,
         Value::Text("".into()),
     );
-    // `printer-alert`/`printer-supply` are RFC 3995 Printer-MIB-encoded
-    // octet strings, not IPP collections.
-    add1(
-        &mut v,
-        "printer-alert",
-        tags::STRING,
-        Value::OctetString(vec![0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
-    );
-    add1(
-        &mut v,
-        "printer-alert-description",
-        tags::TEXT,
-        Value::Text("ready".into()),
-    );
     addn(
         &mut v,
         "reference-uri-schemes-supported",
         tags::URISCHEME,
-        ["file", "ftp", "http", "https", "ipp", "ipps"]
+        ["ftp", "http", "https", "ipp", "ipps"]
             .iter()
             .map(|s| Value::UriScheme((*s).into()))
             .collect(),
-    );
-    add1(
-        &mut v,
-        "printer-geo-location",
-        tags::UNKNOWN,
-        Value::Unknown,
-    );
-    add1(
-        &mut v,
-        "printer-organization",
-        tags::TEXT,
-        Value::Text("".into()),
-    );
-    add1(
-        &mut v,
-        "printer-organizational-unit",
-        tags::TEXT,
-        Value::Text("".into()),
-    );
-    add1(
-        &mut v,
-        "printer-supply",
-        tags::STRING,
-        Value::OctetString(vec![0x01, 0x04, 0xff, 0xff, 0xff, 0xff, 0x00]),
-    );
-    add1(
-        &mut v,
-        "printer-supply-description",
-        tags::TEXT,
-        Value::Text("toner".into()),
-    );
-    add1(
-        &mut v,
-        "printer-supply-info-uri",
-        tags::URI,
-        Value::Uri("https://localhost/supplies".into()),
     );
     add1(
         &mut v,
