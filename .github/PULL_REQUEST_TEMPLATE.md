@@ -12,6 +12,9 @@ does it match (man page / RFC / source reference)? -->
 
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings`
-- [ ] `cargo test --workspace`
-- [ ] upstream `ipptool` matrix still 34/0/1 (`scripts/conformance.sh`)
+- [ ] `cargo test --workspace --locked`
+- [ ] per-crate line coverage `>= 95%` (`./scripts/coverage-gate.sh` / `cargo llvm-cov --package <pkg> --fail-under-lines 95`)
+- [ ] `cargo deny check` and `cargo audit`
+- [ ] upstream `ipptool` matrix green (`scripts/conformance.sh`)
 - [ ] no `unsafe` outside `crates/sys`
+- [ ] commits signed off (`git commit -s`, DCO 1.1)

@@ -5,98 +5,299 @@ on:
     branches: [main]
   pull_request:
 
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
 jobs:
   build-test:
-    name: build + test (stable MSRV)
+    name: build + test (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
+      fail-fast: false
       matrix:
         # MSRV floor + current stable — distro build range.
-        toolchain: ["1.88.0", stable]
+        toolchain: ["1.88.0", "stable"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
       - name: fmt
         run: cargo fmt --all -- --check
+
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
       - name: build
         run: cargo build --workspace --locked
+
       - name: test
         run: cargo test --workspace --locked
-      - name: config self-check
-        run: cargo run -p cupsd -- -t -c etc/cupsd.conf.example
+
+      - name: config self-check (example + shipped defaults)
+        run: |
+          set -euo pipefail
+          # 1. Validate etc/cupsd.conf.example
+          cargo run --locked -p cupsd -- -t -c etc/cupsd.conf.example
+
+          # 2. Validate data/cupsd.conf.default paired with data/cups-files.conf.default
+          # Stage under a temp directory so cups-files.conf is guaranteed to be parsed
+          # alongside cupsd.conf even when cupsd resolves sibling cups-files.conf.
+          tmp_cfg=$(mktemp -d)
+          trap 'rm -rf "$tmp_cfg"' EXIT
+          cp data/cupsd.conf.default "$tmp_cfg/cupsd.conf"
+          cp data/cups-files.conf.default "$tmp_cfg/cups-files.conf"
+
+          out=$(cargo run --locked -p cupsd -- -t -c "$tmp_cfg/cupsd.conf" -s "$tmp_cfg/cups-files.conf" 2>&1)
+          printf '%s\n' "$out"
+          if printf '%s\n' "$out" | grep -qE 'No .*cups-files\.conf'; then
+            echo "ERROR: data/cups-files.conf.default was not loaded during config validation" >&2
+            exit 1
+          fi
+
+          # 3. Also validate direct invocation against data/*.default paths
+          cargo run --locked -p cupsd -- -t -c data/cupsd.conf.default -s data/cups-files.conf.default
+
+  coverage:
+    name: per-crate line coverage (>= 95%)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-llvm-cov
+
+      - name: enforce >= 95% line coverage on every workspace crate
+        run: |
+          set -euo pipefail
+          if [ -x ./scripts/coverage-gate.sh ]; then
+            THRESHOLD=95 ./scripts/coverage-gate.sh
+          else
+            pkgs=$(cargo metadata --no-deps --format-version 1 --locked \
+              | python3 -c 'import json,sys; print("\n".join(sorted(p["name"] for p in json.load(sys.stdin)["packages"])))')
+            failed=0
+            for pkg in $pkgs; do
+              echo "=== Coverage gate (>= 95% lines): $pkg ==="
+              if ! cargo llvm-cov --locked --package "$pkg" --fail-under-lines 95; then
+                echo "FAIL: $pkg below 95% line coverage" >&2
+                failed=1
+              fi
+            done
+            exit "$failed"
+          fi
 
   forbid-unsafe:
-    name: unsafe confined to sys
+    name: unsafe confined to crates/sys
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
       - name: no unsafe outside crates/sys
         run: |
           if grep -rlnE 'unsafe[[:space:]]*(\{|\(|fn|impl|trait|extern)' crates bins --include='*.rs' | grep -v 'crates/sys/'; then
-            echo 'unsafe outside sys' >&2; exit 1
+            echo 'unsafe outside sys' >&2
+            exit 1
           fi
+
+  supply-chain:
+    name: cargo audit + deny + wildcard guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-audit,cargo-deny
+
+      - name: cargo audit
+        run: cargo audit
+
+      - name: cargo deny
+        run: cargo deny check
+
+      - name: forbid external wildcard dependency versions
+        run: |
+          cargo metadata --no-deps --format-version 1 --locked | python3 -c '
+          import json, sys
+          m = json.load(sys.stdin)
+          bad = []
+          for p in m["packages"]:
+              for d in p["dependencies"]:
+                  if not d.get("path") and d.get("req") == "*":
+                      bad.append((p["name"], d["name"], d["req"]))
+          if bad:
+              for item in bad:
+                  print("External wildcard dependency forbidden:", item, file=sys.stderr)
+              sys.exit(1)
+          print("No external wildcard dependencies found.")
+          '
+
+  packaging-lint:
+    name: shell, packaging & governance lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: shell syntax checks (bash -n & sh -n)
+        run: |
+          set -euo pipefail
+          bash -n install.sh scripts/dist.sh
+          sh -n install.sh scripts/dist.sh
+          for script in scripts/*.sh; do
+            echo "Checking $script"
+            bash -n "$script"
+          done
+
+      - name: verify non-empty governance files & valid YAML
+        run: |
+          set -euo pipefail
+          for f in LICENSE-APACHE LICENSE-MIT NOTICE SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md CITATION.cff deny.toml; do
+            if [ ! -s "$f" ]; then
+              echo "ERROR: required governance file is missing or empty: $f" >&2
+              exit 1
+            fi
+          done
+          python3 -c '
+          import glob, sys, yaml
+          files = ["CITATION.cff", ".github/dependabot.yml", ".github/ISSUE_TEMPLATE/config.yml"] + sorted(glob.glob(".github/workflows/*.yml"))
+          for path in files:
+              with open(path, encoding="utf-8") as fh:
+                  yaml.safe_load(fh)
+              print(f"YAML OK: {path}")
+          '
+
+  docker-build:
+    name: docker build + smoke test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          load: true
+          push: false
+          tags: presswork:ci-test
+          cache-from: type=gha
+
+      - name: container smoke test
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint /usr/sbin/cupsd presswork:ci-test -v
+          docker run --rm --entrypoint /usr/sbin/cupsd presswork:ci-test -t -c /etc/cups/cupsd.conf
 
   fuzz:
     name: fuzz smoke (nightly)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
-      - name: install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6a52aad76a94a5fbc50d567bb5be24419801c1fb # nightly
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: fuzz
+
+      - name: install cargo-fuzz (pinned)
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+
       - name: fuzz smoke — every target, short run
         run: |
+          set -euo pipefail
           cd fuzz
-          for t in ipp_decode config_lexer mime_db printers_conf; do
-            cargo +nightly fuzz run "$t" -- -runs=5000 -max_total_time=30 || exit 1
+          for t in $(cargo +nightly fuzz list); do
+            echo "=== Fuzzing target: $t ==="
+            cargo +nightly fuzz run "$t" -- -runs=5000 -max_total_time=30
           done
-
-  supply-chain:
-    name: cargo audit + deny
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: cargo audit
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit
-      - name: cargo deny
-        run: |
-          cargo install cargo-deny --locked
-          cargo deny check
 
   conformance:
     name: ipptool conformance (upstream suite)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       IPPTESTS: /tmp/cups-ref/examples
+      CUPS_REF_TAG: v2.4.11
+      CUPS_REF_SHA: 7d535f73e407a72dfb5c5e83549a5ba27219dfcd
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
       - name: build
         run: cargo build --workspace --locked
-      - name: fetch ipptool + test corpus
+
+      - name: fetch ipptool + pinned upstream CUPS test corpus
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y cups-ipp-utils
-          # The `.test`/`.drv` corpus is not packaged — pull it from the
-          # upstream CUPS tree (examples/ holds the ipptool matrix).
-          git clone --depth 1 https://github.com/OpenPrinting/cups /tmp/cups-ref
+          sudo apt-get install -y --no-install-recommends cups-ipp-utils
+          # The `.test`/`.drv` corpus is not packaged — clone the pinned
+          # OpenPrinting/cups release tag and verify its exact commit SHA.
+          git clone --branch "$CUPS_REF_TAG" --depth 1 https://github.com/OpenPrinting/cups /tmp/cups-ref
+          actual_sha=$(git -C /tmp/cups-ref rev-parse HEAD)
+          if [ "$actual_sha" != "$CUPS_REF_SHA" ]; then
+            echo "ERROR: OpenPrinting/cups $CUPS_REF_TAG SHA mismatch: got $actual_sha, expected $CUPS_REF_SHA" >&2
+            exit 1
+          fi
+
       - name: run daemon in scratch root
-        run: |
-          ./scripts/conformance.sh --bootstrap
+        run: ./scripts/conformance.sh --bootstrap
+
       - name: ipptool matrix
         run: ./scripts/conformance.sh --run

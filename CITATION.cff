@@ -4,6 +4,7 @@ message: If you use this software, please cite it as below.
 type: software
 authors:
   - name: vindeckyy
+    website: https://github.com/vindeckyy
 abstract: >-
   A memory-safe, drop-in replacement for the CUPS print spooler and
   scheduler (cupsd) written in Rust. Implements the IPP wire protocol,
@@ -15,7 +16,10 @@ keywords:
   - ipp
   - print spooler
   - rust
-license: Apache-2.0 OR MIT
+license:
+  - Apache-2.0
+  - MIT
 repository-code: https://github.com/vindeckyy/presswork
+url: https://vindeckyy.github.io/presswork/
 version: 0.1.0
 date-released: "2026-11-12"
