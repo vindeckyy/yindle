@@ -4,13 +4,22 @@
 //! (`mime_readfile.c`/`mime_type_t`); `mime.convs` maps source→destination
 //! type pairs to a cost + filter program (`mime_filter_t`). `filter_chain`
 //! resolves a minimum-cost path through the conversion graph, mirroring
-//! `mimeFilter2` semantics.
+//! `mimeFilter2` semantics (including `*/*` and `super/*` wildcards).
 
-use std::collections::HashMap;
+mod regex;
+
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Maximum nesting depth for parenthesized and negated rule expressions.
+const MAX_RULE_DEPTH: usize = 64;
+
+/// Maximum logical line byte length (caps `\` continuation growth).
+const MAX_LOGICAL_LINE: usize = 64 * 1024;
 
 /// A single primitive test in a rule (`mime_type_check_t` analogue).
 #[derive(Debug, Clone)]
@@ -35,9 +44,9 @@ pub enum Rule {
         range: usize,
         lit: Vec<u8>,
     },
-    /// `regex(off,"pat")` — line starts with regex (subset: `^`-anchored).
+    /// `regex(off,"pat")` — ERE match over bytes starting at `off`.
     Regex { offset: i64, pat: String },
-    /// `match("pat")` / bare `ext` — filename match (`*.ext`, substring).
+    /// `match("pat")` / bare `ext` — filename match (`*.ext`, glob, substring).
     Match { pat: String },
     /// `locale("s")` — match the system locale (checked once at eval).
     Locale { s: String },
@@ -45,6 +54,8 @@ pub enum Rule {
     Priority { n: i32 },
     /// `( expr )` — sub-expression.
     Group { expr: Expr },
+    /// `! rule` — logical negation.
+    Not { rule: Box<Rule> },
 }
 
 /// How a rule joins the running (left-associative) result.
@@ -88,7 +99,7 @@ impl Type {
 /// One `mime.convs` line (`mime_filter_t`).
 #[derive(Debug, Clone)]
 pub struct Conv {
-    /// Source type (`super/type`).
+    /// Source type (`super/type`, `super/*`, or `*/*`).
     pub src: String,
     /// Destination type.
     pub dst: String,
@@ -109,17 +120,71 @@ pub struct MimeDb {
 
 impl MimeDb {
     /// Load all `*.types` + `*.convs` under `dir` (`mimeLoad`).
+    ///
+    /// Also checks `dir/mime` first when present so passing FHS `DataDir`
+    /// (`/usr/share/cups`) automatically loads `/usr/share/cups/mime/*.{types,convs}`
+    /// alongside any files directly in `dir`.
     pub fn load(dir: &Path) -> std::io::Result<Self> {
+        // Preserve error semantics when `dir` itself cannot be read.
+        let _ = std::fs::read_dir(dir)?;
+        let mime_sub = dir.join("mime");
+        let mut dirs = Vec::with_capacity(2);
+        if mime_sub.is_dir() {
+            dirs.push(mime_sub);
+        }
+        dirs.push(dir.to_path_buf());
+        Self::load_dirs(&dirs)
+    }
+
+    /// Load `*.types` and `*.convs` from multiple directories in order.
+    ///
+    /// Missing directories (`NotFound`) are skipped cleanly; files are
+    /// deduplicated by canonical path so overlapping directories never
+    /// double-load the same file.
+    pub fn load_dirs<P: AsRef<Path>>(dirs: &[P]) -> std::io::Result<Self> {
         let mut db = MimeDb::default();
-        for f in sorted_ext(dir, "types")? {
-            db.load_types(&f)?;
+        let mut seen_types = HashSet::new();
+        let mut seen_convs = HashSet::new();
+
+        for d in dirs {
+            let dir = d.as_ref();
+            let types_files = match sorted_ext(dir, "types") {
+                Ok(v) => v,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            };
+            for f in types_files {
+                let key = std::fs::canonicalize(&f).unwrap_or_else(|_| f.clone());
+                if seen_types.insert(key) {
+                    db.load_types(&f)?;
+                }
+            }
+            for f in sorted_ext(dir, "convs")? {
+                let key = std::fs::canonicalize(&f).unwrap_or_else(|_| f.clone());
+                if seen_convs.insert(key) {
+                    db.load_convs(&f)?;
+                }
+            }
         }
-        for f in sorted_ext(dir, "convs")? {
-            db.load_convs(&f)?;
-        }
-        db.types
-            .sort_by(|a, b| b.priority.cmp(&a.priority).then(a.name().cmp(&b.name())));
+        db.sort_types();
         Ok(db)
+    }
+
+    /// Load MIME definitions in standard CUPS FHS precedence order:
+    /// `data_dir/mime`, `data_dir`, then `server_root` (for `local.types` /
+    /// `local.convs`).
+    pub fn load_standard(data_dir: &Path, server_root: &Path) -> std::io::Result<Self> {
+        Self::load_dirs(&[
+            data_dir.join("mime"),
+            data_dir.to_path_buf(),
+            server_root.to_path_buf(),
+        ])
+    }
+
+    /// Sort loaded MIME types by `(priority desc, name asc)`.
+    pub fn sort_types(&mut self) {
+        self.types
+            .sort_by(|a, b| b.priority.cmp(&a.priority).then(a.name().cmp(&b.name())));
     }
 
     /// Parse one `mime.types`-format file.
@@ -139,8 +204,11 @@ impl MimeDb {
             let Some((sup, typ)) = tname.split_once('/') else {
                 continue;
             };
+            if sup.is_empty() || typ.is_empty() {
+                continue;
+            }
             let rest = it.next().unwrap_or("").trim();
-            let (expr, prio) = parse_rules(rest);
+            let (expr, prio) = parse_rules(rest, 0);
             // Merge into existing type (upstream: repeated defs append).
             match self
                 .types
@@ -148,12 +216,14 @@ impl MimeDb {
                 .find(|t| t.sup.eq_ignore_ascii_case(sup) && t.typ.eq_ignore_ascii_case(typ))
             {
                 Some(t) => {
+                    if let Some(p) = prio {
+                        t.priority = p;
+                    }
                     if !t.expr.is_empty() && !expr.is_empty() {
-                        // append with Or joiner
                         let mut e = expr;
                         e[0].0 = Join::Or;
                         t.expr.extend(e);
-                    } else {
+                    } else if !expr.is_empty() {
                         t.expr = expr;
                     }
                 }
@@ -161,7 +231,7 @@ impl MimeDb {
                     sup: sup.to_lowercase(),
                     typ: typ.to_lowercase(),
                     expr,
-                    priority: prio,
+                    priority: prio.unwrap_or(100),
                 }),
             }
         }
@@ -218,43 +288,47 @@ impl MimeDb {
     }
 
     /// Minimum-cost filter chain src→dst (`mimeFilter2` — Dijkstra over the
-    /// conv graph). Returns the ordered conv steps; empty = direct.
+    /// conv graph). Supports `*/*` and `super/*` wildcards and `-` zero-filter
+    /// passthrough edges. Returns the ordered filter conv steps; empty = direct.
     #[must_use]
     pub fn filter_chain(&self, src: &str, dst: &str, max_cost: u32) -> Option<Vec<&Conv>> {
-        use std::cmp::Reverse;
-        use std::collections::BinaryHeap;
         let src = src.to_lowercase();
         let dst = dst.to_lowercase();
-        if src == dst {
+        if mime_matches(&dst, &src) {
             return Some(vec![]);
         }
-        // best[type] = (cost, path)
-        let mut best: HashMap<String, (u32, Vec<&Conv>)> = HashMap::new();
+        // best[type] = (cost, wildcard_penalty, filter_path)
+        let mut best: HashMap<String, (u32, u32, Vec<&Conv>)> = HashMap::new();
         let mut heap = BinaryHeap::new();
-        best.insert(src.clone(), (0, vec![]));
-        heap.push(Reverse((0u32, src.clone())));
-        while let Some(Reverse((cost, cur))) = heap.pop() {
-            if cur == dst {
-                return Some(best[&dst].1.clone());
+        best.insert(src.clone(), (0, 0, vec![]));
+        heap.push(Reverse(((0u32, 0u32), src)));
+
+        while let Some(Reverse(((cost, wpen), cur))) = heap.pop() {
+            if mime_matches(&dst, &cur) {
+                return Some(best[&cur].2.clone());
             }
-            if best.get(&cur).is_some_and(|(d, _)| cost > *d) {
+            if best
+                .get(&cur)
+                .is_some_and(|(d, dw, _)| (cost, wpen) > (*d, *dw))
+            {
                 continue;
             }
-            for c in self
-                .convs
-                .iter()
-                .filter(|c| c.src == cur && c.program != "-")
-            {
-                let ncost = cost + c.cost;
-                if ncost > max_cost && max_cost != 0 {
+            for c in self.convs.iter().filter(|c| mime_matches(&c.src, &cur)) {
+                let ncost = cost.saturating_add(c.cost);
+                if max_cost != 0 && ncost > max_cost {
                     continue;
                 }
-                let better = best.get(&c.dst).is_none_or(|(d, _)| ncost < *d);
+                let nwpen = wpen.saturating_add(wildcard_penalty(&c.src));
+                let better = best
+                    .get(&c.dst)
+                    .is_none_or(|(d, dw, _)| (ncost, nwpen) < (*d, *dw));
                 if better {
-                    let mut path = best[&cur].1.clone();
-                    path.push(c);
-                    best.insert(c.dst.clone(), (ncost, path));
-                    heap.push(Reverse((ncost, c.dst.clone())));
+                    let mut path = best[&cur].2.clone();
+                    if c.program != "-" {
+                        path.push(c);
+                    }
+                    best.insert(c.dst.clone(), (ncost, nwpen, path));
+                    heap.push(Reverse(((ncost, nwpen), c.dst.clone())));
                 }
             }
         }
@@ -264,13 +338,31 @@ impl MimeDb {
     /// Does `dst` accept `src` directly or via convs (for `file_ready` checks)?
     #[must_use]
     pub fn can_convert(&self, src: &str, dst: &str) -> bool {
-        src.eq_ignore_ascii_case(dst)
-            || self.filter_chain(src, dst, 0).is_some_and(|_| true)
-            || self.convs.iter().any(|c| c.src == src && c.dst == dst)
+        self.filter_chain(src, dst, 0).is_some()
     }
 }
 
-fn sorted_ext(dir: &Path, ext: &str) -> std::io::Result<Vec<std::path::PathBuf>> {
+/// Does MIME `pattern` (which may contain `*/*` or `super/*`) match `concrete`?
+fn mime_matches(pattern: &str, concrete: &str) -> bool {
+    if pattern == "*/*" || pattern == concrete {
+        return true;
+    }
+    let (Some((ps, pt)), Some((cs, ct))) = (pattern.split_once('/'), concrete.split_once('/'))
+    else {
+        return false;
+    };
+    (ps == "*" || ps == cs) && (pt == "*" || pt == ct)
+}
+
+fn wildcard_penalty(pattern: &str) -> u32 {
+    if pattern == "*/*" {
+        2
+    } else {
+        u32::from(pattern.contains('*'))
+    }
+}
+
+fn sorted_ext(dir: &Path, ext: &str) -> std::io::Result<Vec<PathBuf>> {
     let mut v: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(std::result::Result::ok)
         .map(|e| e.path())
@@ -280,17 +372,28 @@ fn sorted_ext(dir: &Path, ext: &str) -> std::io::Result<Vec<std::path::PathBuf>>
     Ok(v)
 }
 
-/// Join `\`-continuation lines, strip comments.
-fn logical_lines<R: BufRead>(r: R) -> impl Iterator<Item = String> {
+/// Join `\`-continuation lines while tolerating non-UTF-8 bytes in comments.
+fn logical_lines<R: BufRead>(mut r: R) -> impl Iterator<Item = String> {
     let mut buf = String::new();
     let mut out = Vec::new();
-    for line in r.lines().map_while(Result::ok) {
-        let line = line.trim_end();
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        match r.read_until(b'\n', &mut raw) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let lossy = String::from_utf8_lossy(&raw);
+        let line = lossy.trim_end();
         if let Some(stripped) = line.strip_suffix('\\') {
-            buf.push_str(stripped);
-            buf.push(' ');
+            if buf.len() < MAX_LOGICAL_LINE {
+                buf.push_str(stripped);
+                buf.push(' ');
+            }
         } else {
-            buf.push_str(line);
+            if buf.len() < MAX_LOGICAL_LINE {
+                buf.push_str(line);
+            }
             out.push(std::mem::take(&mut buf));
         }
     }
@@ -302,11 +405,21 @@ fn logical_lines<R: BufRead>(r: R) -> impl Iterator<Item = String> {
 
 // ---------- rule parsing ----------
 
-fn parse_rules(s: &str) -> (Expr, i32) {
-    fn skip_ws(b: &[u8], i: &mut usize) {
-        while *i < b.len() && (b[*i] as char).is_whitespace() {
-            *i += 1;
-        }
+fn skip_ascii_ws(b: &[u8], i: &mut usize) {
+    while *i < b.len() && b[*i].is_ascii_whitespace() {
+        *i += 1;
+    }
+}
+
+fn next_char_len(s: &str, pos: usize) -> usize {
+    s.get(pos..)
+        .and_then(|rest| rest.chars().next())
+        .map_or(1, char::len_utf8)
+}
+
+fn parse_rules(s: &str, depth: usize) -> (Expr, Option<i32>) {
+    if depth > MAX_RULE_DEPTH {
+        return (Vec::new(), None);
     }
 
     // Recursive-descent fold: expr := operand (join operand)* where the
@@ -317,83 +430,34 @@ fn parse_rules(s: &str) -> (Expr, i32) {
     let mut pos = 0usize;
     let mut expr: Expr = Vec::new();
     let mut pending_and = false;
-    let mut priority = 100;
+    let mut priority: Option<i32> = None;
 
-    skip_ws(buf, &mut pos);
+    skip_ascii_ws(buf, &mut pos);
     while pos < buf.len() {
-        // Parse one operand.
-        let rule: Rule;
-        if buf[pos] == b'(' {
-            let mut depth = 1;
-            let mut k = pos + 1;
-            let mut inq = false;
-            while k < buf.len() && depth > 0 {
-                match buf[k] as char {
-                    '"' => inq = !inq,
-                    '(' if !inq => depth += 1,
-                    ')' if !inq => depth -= 1,
-                    _ => {}
-                }
-                k += 1;
+        let before = pos;
+        let Some(rule) = parse_operand(s, &mut pos, depth) else {
+            if pos == before {
+                pos += next_char_len(s, pos);
             }
-            // Truncated input can leave `k <= pos+1` (a `(` as the final
-            // byte) — `get` returns None for that inverted range.
-            let (inner, _) = parse_rules(s.get(pos + 1..k.saturating_sub(1)).unwrap_or(""));
-            rule = Rule::Group { expr: inner };
-            pos = k;
-        } else {
-            let mut k = pos;
-            let mut depth = 0;
-            let mut inq = false;
-            while k < buf.len() {
-                let ch = buf[k] as char;
-                match ch {
-                    '"' => inq = !inq,
-                    '(' if !inq => depth += 1,
-                    ')' if !inq => {
-                        if depth == 0 {
-                            break;
-                        }
-                        depth -= 1;
-                    }
-                    '+' | ' ' | '\t' | ',' if depth == 0 && !inq => break,
-                    _ => {}
-                }
-                k += 1;
-            }
-            if let Some(parsed) = parse_rule(&s[pos..k]) {
-                rule = parsed;
-            } else {
-                pos = k.max(pos + 1);
-                skip_ws(buf, &mut pos);
-                continue;
-            }
-            // Guarantee forward progress even if a future caller lets an
-            // empty slice parse to Some — a rule that consumed no input
-            // must not be pushed.
-            if k == pos {
-                skip_ws(buf, &mut pos);
-                pos += usize::from(pos < buf.len());
-                continue;
-            }
-            pos = k;
-        }
+            skip_ascii_ws(buf, &mut pos);
+            continue;
+        };
 
         if let Rule::Priority { n } = rule {
-            priority = n;
-            skip_ws(buf, &mut pos);
+            priority = Some(n);
+            skip_ascii_ws(buf, &mut pos);
             pending_and = false;
             if pos < buf.len() && (buf[pos] == b'+' || buf[pos] == b',') {
                 pos += 1;
             }
-            skip_ws(buf, &mut pos);
+            skip_ascii_ws(buf, &mut pos);
             continue;
         }
         let join = if pending_and { Join::And } else { Join::Or };
         expr.push((join, rule));
 
         // Consume the joiner: whitespace, then optional `+` (And) or `,` (Or).
-        skip_ws(buf, &mut pos);
+        skip_ascii_ws(buf, &mut pos);
         pending_and = false;
         if pos < buf.len() && buf[pos] == b'+' {
             pending_and = true;
@@ -401,99 +465,158 @@ fn parse_rules(s: &str) -> (Expr, i32) {
         } else if pos < buf.len() && buf[pos] == b',' {
             pos += 1;
         }
-        skip_ws(buf, &mut pos);
+        skip_ascii_ws(buf, &mut pos);
     }
     (expr, priority)
 }
 
+fn parse_operand(s: &str, pos: &mut usize, depth: usize) -> Option<Rule> {
+    if depth > MAX_RULE_DEPTH {
+        *pos = s.len();
+        return None;
+    }
+    let buf = s.as_bytes();
+    skip_ascii_ws(buf, pos);
+    if *pos >= buf.len() {
+        return None;
+    }
+    if buf[*pos] == b'!' {
+        *pos += 1;
+        skip_ascii_ws(buf, pos);
+        let inner = parse_operand(s, pos, depth + 1)?;
+        return Some(Rule::Not {
+            rule: Box::new(inner),
+        });
+    }
+    if buf[*pos] == b'(' {
+        let mut pdepth = 1usize;
+        let mut k = *pos + 1;
+        let mut quote: Option<u8> = None;
+        while k < buf.len() && pdepth > 0 {
+            let b = buf[k];
+            if let Some(q) = quote {
+                if b == q {
+                    quote = None;
+                }
+            } else {
+                match b {
+                    b'"' | b'\'' => quote = Some(b),
+                    b'(' => pdepth += 1,
+                    b')' => pdepth -= 1,
+                    _ => {}
+                }
+            }
+            k += 1;
+        }
+        let inner_end = if pdepth == 0 && k > *pos + 1 && buf[k - 1] == b')' {
+            k - 1
+        } else {
+            k
+        };
+        let inner_str = s.get(*pos + 1..inner_end).unwrap_or("");
+        *pos = k;
+        let (inner, _) = parse_rules(inner_str, depth + 1);
+        return Some(Rule::Group { expr: inner });
+    }
+
+    let start = *pos;
+    let mut k = start;
+    let mut pdepth = 0usize;
+    let mut quote: Option<u8> = None;
+    while k < buf.len() {
+        let b = buf[k];
+        if let Some(q) = quote {
+            if b == q {
+                quote = None;
+            }
+        } else {
+            match b {
+                b'"' | b'\'' => quote = Some(b),
+                b'(' => pdepth += 1,
+                b')' => {
+                    if pdepth == 0 {
+                        break;
+                    }
+                    pdepth -= 1;
+                }
+                b'+' | b',' if pdepth == 0 => break,
+                _ if b.is_ascii_whitespace() && pdepth == 0 => break,
+                _ => {}
+            }
+        }
+        k += 1;
+    }
+    if k == start {
+        *pos += next_char_len(s, start);
+        return None;
+    }
+    *pos = k;
+    s.get(start..k).and_then(parse_rule)
+}
+
 fn parse_rule(t: &str) -> Option<Rule> {
-    // `fn(a, b, "c")` or bare extension/match. Empty slices are unparseable —
-    // returning Some here would let `parse_rules` push a `*.` Match without
-    // advancing `pos`, looping until OOM on inputs like `…)`.
     if t.is_empty() {
         return None;
     }
     if let Some(open) = t.find('(') {
         let name = &t[..open];
-        let argstr = t[open + 1..].trim_end_matches(')');
+        let rest = &t[open + 1..];
+        let argstr = rest.strip_suffix(')').unwrap_or(rest);
         let mut parts = argstr.splitn(2, ',');
         let arg1 = parts.next().unwrap_or("").trim();
         let arg2 = parts.next().unwrap_or("").trim();
-        match name {
-            "string" => {
-                return Some(Rule::Str {
-                    offset: num(arg1),
-                    lit: lit(arg2),
-                })
-            }
-            "istring" => {
-                return Some(Rule::IStr {
-                    offset: num(arg1),
-                    lit: lit(arg2),
-                })
-            }
-            "char" => {
-                return Some(Rule::Char {
-                    offset: num(arg1),
-                    v: u8::try_from(num(arg2)).unwrap_or_default(),
-                })
-            }
-            "short" => {
-                return Some(Rule::Short {
-                    offset: num(arg1),
-                    v: u16::try_from(num(arg2)).unwrap_or_default(),
-                })
-            }
-            "int" => {
-                return Some(Rule::Int {
-                    offset: num(arg1),
-                    v: u32::try_from(num(arg2)).unwrap_or_default(),
-                })
-            }
-            "ascii" => {
-                return Some(Rule::Ascii {
-                    offset: num(arg1),
-                    len: usize::try_from(num(arg2)).unwrap_or_default(),
-                })
-            }
-            "printable" => {
-                return Some(Rule::Printable {
-                    offset: num(arg1),
-                    len: usize::try_from(num(arg2)).unwrap_or_default(),
-                })
-            }
+        return match name {
+            "string" => Some(Rule::Str {
+                offset: num(arg1),
+                lit: lit(arg2),
+            }),
+            "istring" => Some(Rule::IStr {
+                offset: num(arg1),
+                lit: lit(arg2),
+            }),
+            "char" => Some(Rule::Char {
+                offset: num(arg1),
+                v: u8::try_from(num(arg2)).unwrap_or_default(),
+            }),
+            "short" => Some(Rule::Short {
+                offset: num(arg1),
+                v: u16::try_from(num(arg2)).unwrap_or_default(),
+            }),
+            "int" => Some(Rule::Int {
+                offset: num(arg1),
+                v: u32::try_from(num(arg2)).unwrap_or_default(),
+            }),
+            "ascii" => Some(Rule::Ascii {
+                offset: num(arg1),
+                len: usize::try_from(num(arg2)).unwrap_or_default(),
+            }),
+            "printable" => Some(Rule::Printable {
+                offset: num(arg1),
+                len: usize::try_from(num(arg2)).unwrap_or_default(),
+            }),
             "contains" => {
                 let mut a2 = arg2.splitn(2, ',');
-                return Some(Rule::Contains {
+                Some(Rule::Contains {
                     offset: num(arg1),
                     range: usize::try_from(num(a2.next().unwrap_or("0"))).unwrap_or_default(),
                     lit: lit(a2.next().unwrap_or("")),
-                });
-            }
-            "regex" => {
-                return Some(Rule::Regex {
-                    offset: num(arg1),
-                    pat: unquote(arg2).into_owned(),
                 })
             }
-            "match" => {
-                return Some(Rule::Match {
-                    pat: unquote(arg1).into_owned(),
-                })
-            }
-            "locale" => {
-                return Some(Rule::Locale {
-                    s: unquote(arg1).into_owned(),
-                })
-            }
-            "priority" => {
-                return Some(Rule::Priority {
-                    n: i32::try_from(num(arg1)).unwrap_or_default(),
-                })
-            }
-            "true" => return Some(Rule::Char { offset: 0, v: 0 }), // never true; handled below
-            _ => return None,
-        }
+            "regex" => Some(Rule::Regex {
+                offset: num(arg1),
+                pat: unquote(arg2).into_owned(),
+            }),
+            "match" => Some(Rule::Match {
+                pat: unquote(arg1).into_owned(),
+            }),
+            "locale" => Some(Rule::Locale {
+                s: unquote(arg1).into_owned(),
+            }),
+            "priority" => Some(Rule::Priority {
+                n: i32::try_from(num(arg1)).unwrap_or_default(),
+            }),
+            _ => None,
+        };
     }
     // Bare token = filename extension match (`*.tok` semantics).
     if t.eq_ignore_ascii_case("true") {
@@ -506,7 +629,7 @@ fn parse_rule(t: &str) -> Option<Rule> {
 }
 
 fn num(s: &str) -> i64 {
-    let s = s.trim().trim_matches('"');
+    let s = s.trim().trim_matches('"').trim_matches('\'');
     if let Some(h) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         i64::from_str_radix(h, 16).unwrap_or(0)
     } else {
@@ -515,19 +638,29 @@ fn num(s: &str) -> i64 {
 }
 
 fn lit(s: &str) -> Vec<u8> {
-    let s = s.trim();
-    let unq = unquote(s);
-    // `<hex>` escapes inside the literal.
+    let unq = unquote(s.trim());
+    // `<hex>` escapes inside the literal — supports single- and multi-byte hex
+    // sequences (e.g. `<89>`, `<FFD8FF>`, `<59a66a95>`), while leaving non-hex
+    // angle-bracket text like `<HTML>` or `<!DOCTYPE` literal.
     let b = unq.as_bytes();
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'<' {
-            if let Some(end) = b[i..].iter().position(|&c| c == b'>') {
-                let hex = &unq[i + 1..i + end];
-                if let Ok(v) = u8::from_str_radix(hex, 16) {
-                    out.push(v);
-                    i += end + 1;
+            if let Some(end) = b[i + 1..].iter().position(|&c| c == b'>') {
+                let hex = &unq[i + 1..i + 1 + end];
+                if !hex.is_empty()
+                    && hex.len().is_multiple_of(2)
+                    && hex.bytes().all(|c| c.is_ascii_hexdigit())
+                {
+                    let mut j = 0;
+                    while j < hex.len() {
+                        if let Ok(v) = u8::from_str_radix(&hex[j..j + 2], 16) {
+                            out.push(v);
+                        }
+                        j += 2;
+                    }
+                    i += end + 2;
                     continue;
                 }
             }
@@ -540,7 +673,9 @@ fn lit(s: &str) -> Vec<u8> {
 
 fn unquote(s: &str) -> std::borrow::Cow<'_, str> {
     let s = s.trim();
-    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+    {
         s[1..s.len() - 1].into()
     } else {
         s.into()
@@ -568,53 +703,61 @@ fn eval_expr(expr: &Expr, filename: &str, head: &[u8]) -> bool {
 
 fn eval_rule(r: &Rule, filename: &str, head: &[u8]) -> bool {
     match r {
-        Rule::Str { offset, lit } => get(head, *offset, lit.len()) == lit.as_slice(),
-        Rule::IStr { offset, lit } => get(head, *offset, lit.len())
-            .iter()
-            .zip(lit)
-            .all(|(a, b)| a.eq_ignore_ascii_case(b)),
-        Rule::Char { offset, v } => get(head, *offset, 1).first() == Some(v),
-        Rule::Short { offset, v } => {
-            u16::from_be_bytes(get(head, *offset, 2).try_into().unwrap_or([0; 2])) == *v
+        Rule::Str { offset, lit } => {
+            !lit.is_empty() && get_exact(head, *offset, lit.len()) == Some(lit.as_slice())
         }
-        Rule::Int { offset, v } => {
-            u32::from_be_bytes(get(head, *offset, 4).try_into().unwrap_or([0; 4])) == *v
+        Rule::IStr { offset, lit } => {
+            !lit.is_empty()
+                && get_exact(head, *offset, lit.len()).is_some_and(|s| s.eq_ignore_ascii_case(lit))
         }
-        Rule::Ascii { offset, len } => get(head, *offset, *len)
-            .iter()
-            .all(|c| matches!(c, b'\r' | b'\n' | b'\t' | 8 | 32..=126)),
-        Rule::Printable { offset, len } => get(head, *offset, *len)
-            .iter()
-            .all(|c| matches!(c, b'\r' | b'\n' | b'\t' | 8 | 32..=126 | 128..=254)),
+        Rule::Char { offset, v } => get_exact(head, *offset, 1).is_some_and(|s| s[0] == *v),
+        Rule::Short { offset, v } => get_exact(head, *offset, 2)
+            .and_then(|s| s.try_into().ok())
+            .is_some_and(|b| u16::from_be_bytes(b) == *v),
+        Rule::Int { offset, v } => get_exact(head, *offset, 4)
+            .and_then(|s| s.try_into().ok())
+            .is_some_and(|b| u32::from_be_bytes(b) == *v),
+        Rule::Ascii { offset, len } => {
+            let s = get_clamped(head, *offset, *len);
+            !s.is_empty()
+                && s.iter()
+                    .all(|c| matches!(c, b'\r' | b'\n' | b'\t' | 8 | 32..=126))
+        }
+        Rule::Printable { offset, len } => {
+            let s = get_clamped(head, *offset, *len);
+            !s.is_empty()
+                && s.iter()
+                    .all(|c| matches!(c, b'\r' | b'\n' | b'\t' | 8 | 32..=126 | 128..=254))
+        }
         Rule::Contains { offset, range, lit } => {
-            // `windows(0)` panics — an empty literal matches at offset 0,
-            // like strstr(s, "").
             if lit.is_empty() {
-                true
+                false
             } else {
-                let win = get(head, *offset, *range + lit.len());
+                let win = get_clamped(head, *offset, *range);
                 win.windows(lit.len()).any(|w| w == lit.as_slice())
             }
         }
         Rule::Regex { offset, pat } => {
-            // Upstream uses REG_EXTENDED on the first line. We support a
-            // useful subset: `^`-anchored literal/escaped patterns.
-            let text = String::from_utf8_lossy(get(head, *offset, head.len()));
-            let line = text.lines().next().unwrap_or("");
-            regex_match(pat, line)
+            let slice = get_clamped(head, *offset, 2048);
+            let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
+            if end == 0 {
+                return false;
+            }
+            let text = String::from_utf8_lossy(&slice[..end]);
+            regex::regex_match(pat, &text)
         }
         Rule::Match { pat } => {
             if pat.is_empty() {
                 return true;
             }
             let pat = pat.to_lowercase();
-            let name = std::path::Path::new(filename)
+            let name = Path::new(filename)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or(filename)
                 .to_lowercase();
-            if let Some(suf) = pat.strip_prefix('*') {
-                name.ends_with(suf)
+            if pat.contains('*') || pat.contains('?') {
+                glob_match(&pat, &name)
             } else {
                 name.contains(&pat)
             }
@@ -625,111 +768,72 @@ fn eval_rule(r: &Rule, filename: &str, head: &[u8]) -> bool {
             .contains(&s.to_lowercase()),
         Rule::Priority { .. } => true,
         Rule::Group { expr } => eval_expr(expr, filename, head),
+        Rule::Not { rule } => !eval_rule(rule, filename, head),
     }
 }
 
-fn get(head: &[u8], offset: i64, len: usize) -> &[u8] {
-    if offset < 0 {
-        let neg = usize::try_from(-offset).unwrap_or(usize::MAX);
-        let o = head.len().saturating_sub(neg);
-        return head.get(o..o.saturating_add(len)).unwrap_or(&[]);
-    }
-    let off = usize::try_from(offset).unwrap_or(usize::MAX);
-    head.get(off..off.saturating_add(len)).unwrap_or(&[])
-}
-
-/// Minimal ERE subset for `regex()` — `^` anchor + literal/`[]`/`.`/`()`/`*`
-/// matched against the start of line. Good enough for stock mime.types
-/// (e.g. `^[\n\r]*%PDF`).
-fn regex_match(pat: &str, line: &str) -> bool {
-    let pat = pat.strip_prefix('^').unwrap_or(pat);
-    let chars: Vec<char> = line.chars().collect();
-    let mut ci = 0;
-    let pc: Vec<char> = pat.chars().collect();
-    let mut i = 0;
-    while i < pc.len() {
-        match pc[i] {
-            '[' => {
-                // char class with optional leading `*` after it
-                let mut j = i + 1;
-                let mut cls = Vec::new();
-                let neg = pc.get(j) == Some(&'^');
-                if neg {
-                    j += 1;
-                }
-                while j < pc.len() && pc[j] != ']' {
-                    cls.push(pc[j]);
-                    j += 1;
-                }
-                let star = pc.get(j + 1) == Some(&'*');
-                // consume matching chars
-                while ci < chars.len() {
-                    let m = cls_match(&cls, neg, chars[ci]);
-                    if !m {
-                        break;
-                    }
-                    ci += 1;
-                    if !star {
-                        break;
-                    }
-                }
-                i = j + 1 + usize::from(star);
-            }
-            '(' => {
-                // group: treat transparently — match contents literally
-                let mut j = i;
-                while j < pc.len() && pc[j] != ')' {
-                    j += 1;
-                }
-                i = j + 1;
-            }
-            c => {
-                if ci >= chars.len() || chars[ci] != c {
-                    return false;
-                }
-                ci += 1;
-                i += 1;
-            }
-        }
-    }
-    true
-}
-
-fn cls_match(cls: &[char], neg: bool, c: char) -> bool {
-    let mut found = false;
-    let mut i = 0;
-    while i < cls.len() {
-        if i + 2 < cls.len() && cls[i + 1] == '-' {
-            if c >= cls[i] && c <= cls[i + 2] {
-                found = true;
-            }
-            i += 3;
-        } else {
-            // escaped char like \n inside the class
-            if cls[i] == '\\' && i + 1 < cls.len() {
-                let e = match cls[i + 1] {
-                    'n' => '\n',
-                    'r' => '\r',
-                    't' => '\t',
-                    x => x,
-                };
-                if c == e {
-                    found = true;
-                }
-                i += 2;
-                continue;
-            }
-            if c == cls[i] {
-                found = true;
-            }
-            i += 1;
-        }
-    }
-    if neg {
-        !found
+/// Exact slice of length `len` at `offset`; returns `None` on OOB or overflow.
+fn get_exact(head: &[u8], offset: i64, len: usize) -> Option<&[u8]> {
+    let start = if offset < 0 {
+        let neg = usize::try_from(offset.unsigned_abs()).ok()?;
+        head.len().checked_sub(neg)?
     } else {
-        found
+        usize::try_from(offset).ok()?
+    };
+    let end = start.checked_add(len)?;
+    head.get(start..end)
+}
+
+/// Clamped slice of up to `max_len` bytes starting at `offset` (capped at `head.len()`).
+/// Returns `&[]` if `offset` is past the end of `head` or `max_len == 0`.
+fn get_clamped(head: &[u8], offset: i64, max_len: usize) -> &[u8] {
+    if max_len == 0 || head.is_empty() {
+        return &[];
     }
+    let start = if offset < 0 {
+        let neg = usize::try_from(offset.unsigned_abs()).unwrap_or(usize::MAX);
+        head.len().saturating_sub(neg)
+    } else {
+        let Ok(off) = usize::try_from(offset) else {
+            return &[];
+        };
+        if off >= head.len() {
+            return &[];
+        }
+        off
+    };
+    let end = start.saturating_add(max_len).min(head.len());
+    head.get(start..end).unwrap_or(&[])
+}
+
+/// Linear-time wildcard glob matching (`*` and `?`).
+fn glob_match(pat: &str, text: &str) -> bool {
+    let p: Vec<char> = pat.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pat_idx, mut txt_idx) = (0usize, 0usize);
+    let mut star_pat: Option<usize> = None;
+    let mut star_txt = 0usize;
+
+    while txt_idx < t.len() {
+        if pat_idx < p.len() && (p[pat_idx] == '?' || p[pat_idx] == t[txt_idx]) {
+            pat_idx += 1;
+            txt_idx += 1;
+        } else if pat_idx < p.len() && p[pat_idx] == '*' {
+            star_pat = Some(pat_idx);
+            star_txt = txt_idx;
+            pat_idx += 1;
+        } else if let Some(sp) = star_pat {
+            pat_idx = sp + 1;
+            star_txt += 1;
+            txt_idx = star_txt;
+        } else {
+            return false;
+        }
+    }
+    while pat_idx < p.len() && p[pat_idx] == '*' {
+        pat_idx += 1;
+    }
+    pat_idx == p.len()
 }
 
 impl std::fmt::Display for MimeDb {
