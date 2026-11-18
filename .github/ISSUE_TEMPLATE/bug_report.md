@@ -6,14 +6,18 @@ labels: bug
 assignees: ''
 ---
 
+> **Security bugs:** Do **not** report security vulnerabilities in public issues.
+> Use [GitHub Private Vulnerability Reporting](https://github.com/vindeckyy/presswork/security/advisories/new)
+> (see [SECURITY.md](https://github.com/vindeckyy/presswork/blob/main/SECURITY.md)).
+
 **presswork version / commit**
-<!-- output of `cupsd -V` or the release tag / commit SHA -->
+<!-- output of `cupsd --version` (or `cupsd -v`), or the release tag / commit SHA -->
 
 **Environment**
-<!-- distro, systemd version, how installed (.deb / tarball / source) -->
+<!-- distro, systemd/container version, architecture, how installed (.deb / tarball / source / container) -->
 
 **What happened**
-<!-- observed behavior, log lines from /var/log/cups/error_log -->
+<!-- observed behavior, sanitized log lines from /var/log/cups/error_log -->
 
 **What stock CUPS does here**
 <!-- if a compatibility divergence: what upstream cupsd does instead -->

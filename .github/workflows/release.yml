@@ -4,46 +4,408 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and publish (e.g. v0.1.0; must match Cargo.toml version)'
+        required: true
+        type: string
+      publish_crates:
+        description: 'Also publish library crates to crates.io after releasing'
+        required: false
+        type: boolean
+        default: true
 
-permissions:
-  contents: write
+permissions: {}
 
 env:
+  CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
 jobs:
-  dist:
-    name: build + publish release assets
+  verify:
+    name: pre-release verification gates
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.version-gate.outputs.tag }}
+      version: ${{ steps.version-gate.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: build artifacts (tarball + deb + checksums)
-        run: ./scripts/dist.sh
-
-      - name: extract release notes for tag
+      - name: verify release tag matches Cargo.toml and CITATION.cff
+        id: version-gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          ver="${GITHUB_REF_NAME#v}"
-          awk -v ver="$ver" '
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            release_tag="$INPUT_TAG"
+          else
+            release_tag="$REF_NAME"
+          fi
+
+          if ! printf '%s' "$release_tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
+            echo "ERROR: release tag '$release_tag' is not a valid semver vX.Y.Z tag (refusing non-version/main tags)" >&2
+            exit 1
+          fi
+
+          tag_ver="${release_tag#v}"
+          cargo_ver=$(python3 -c '
+          import tomllib
+          with open("Cargo.toml", "rb") as f:
+              print(tomllib.load(f)["workspace"]["package"]["version"])
+          ')
+          cff_ver=$(python3 -c '
+          import yaml
+          with open("CITATION.cff", encoding="utf-8") as f:
+              print(yaml.safe_load(f)["version"])
+          ')
+
+          if [ "$tag_ver" != "$cargo_ver" ]; then
+            echo "ERROR: tag version ($tag_ver) != Cargo.toml workspace.package.version ($cargo_ver)" >&2
+            exit 1
+          fi
+          if [ "$tag_ver" != "$cff_ver" ]; then
+            echo "ERROR: tag version ($tag_ver) != CITATION.cff version ($cff_ver)" >&2
+            exit 1
+          fi
+
+          for f in LICENSE-APACHE LICENSE-MIT NOTICE SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md; do
+            if [ ! -s "$f" ]; then
+              echo "ERROR: required governance file is missing or empty: $f" >&2
+              exit 1
+            fi
+          done
+
+          echo "Verified release tag $release_tag matches Cargo.toml and CITATION.cff ($cargo_ver)."
+          {
+            echo "tag=$release_tag"
+            echo "version=$cargo_ver"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          components: clippy, rustfmt, llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-audit,cargo-deny,cargo-llvm-cov
+
+      - name: fmt + clippy + test
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace --locked
+
+      - name: per-crate line coverage gate (>= 95%)
+        run: |
+          set -euo pipefail
+          if [ -x ./scripts/coverage-gate.sh ]; then
+            THRESHOLD=95 ./scripts/coverage-gate.sh
+          else
+            pkgs=$(cargo metadata --no-deps --format-version 1 --locked \
+              | python3 -c 'import json,sys; print("\n".join(sorted(p["name"] for p in json.load(sys.stdin)["packages"])))')
+            failed=0
+            for pkg in $pkgs; do
+              echo "=== Pre-release coverage gate (>= 95% lines): $pkg ==="
+              if ! cargo llvm-cov --locked --package "$pkg" --fail-under-lines 95; then
+                failed=1
+              fi
+            done
+            exit "$failed"
+          fi
+
+      - name: supply-chain audit + deny
+        run: |
+          set -euo pipefail
+          cargo audit
+          cargo deny check
+
+  build-matrix:
+    name: build (${{ matrix.target }})
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            native_dist: true
+          - target: aarch64-unknown-linux-gnu
+            native_dist: false
+          - target: x86_64-unknown-linux-musl
+            native_dist: false
+          - target: aarch64-unknown-linux-musl
+            native_dist: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: setup Zig + cargo-zigbuild for cross targets
+        if: ${{ !matrix.native_dist }}
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: '0.14.0'
+          cache-key: release-${{ matrix.target }}
+
+      - name: install cargo-zigbuild
+        if: ${{ !matrix.native_dist }}
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-zigbuild
+
+      - name: build native release tarball + .deb
+        if: ${{ matrix.native_dist }}
+        env:
+          VER: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          ./scripts/dist.sh "$VER"
+
+      - name: sanity-check .deb package integrity
+        if: ${{ matrix.native_dist }}
+        run: |
+          set -euo pipefail
+          deb=$(ls dist/*.deb | head -n 1)
+          [ -f "$deb" ] || { echo "ERROR: no .deb produced in dist/" >&2; exit 1; }
+          echo "Inspecting $deb"
+
+          contents=$(dpkg-deb -c "$deb")
+          printf '%s\n' "$contents"
+
+          # 1. Must NOT pollute / with installer, README, or license files
+          if printf '%s\n' "$contents" | grep -qE '[[:space:]]\./(install\.sh|README\.md|LICENSE-APACHE|LICENSE-MIT|NOTICE)$'; then
+            echo "ERROR: .deb pollutes root filesystem / with non-FHS files" >&2
+            exit 1
+          fi
+
+          # 2. Must contain /usr/sbin/cupsd
+          if ! printf '%s\n' "$contents" | grep -qE '[[:space:]]\./usr/sbin/cupsd$'; then
+            echo "ERROR: .deb is missing ./usr/sbin/cupsd" >&2
+            exit 1
+          fi
+
+          # 3. Verify no group-writable 0775 umask leak on standard FHS dirs
+          if printf '%s\n' "$contents" | grep -qE '^drwxrwxr-x.*[[:space:]]\./(etc|usr|var|run)?/?$'; then
+            echo "ERROR: .deb contains 0775 group-writable top-level FHS directories" >&2
+            exit 1
+          fi
+
+          # 4. Inspect DEBIAN control metadata, conffiles, and postinst
+          ctrl_dir=$(mktemp -d)
+          trap 'rm -rf "$ctrl_dir"' EXIT
+          dpkg-deb -e "$deb" "$ctrl_dir"
+
+          if [ ! -s "$ctrl_dir/conffiles" ]; then
+            echo "ERROR: .deb is missing non-empty DEBIAN/conffiles" >&2
+            exit 1
+          fi
+          grep -q '^/etc/cups/cupsd\.conf$' "$ctrl_dir/conffiles"
+          grep -q '^/etc/cups/cups-files\.conf$' "$ctrl_dir/conffiles"
+
+          if [ ! -x "$ctrl_dir/postinst" ]; then
+            echo "ERROR: .deb is missing executable DEBIAN/postinst" >&2
+            exit 1
+          fi
+          sh -n "$ctrl_dir/postinst"
+
+          # Ensure no executable lines follow top-level `exit 0` in postinst
+          after_exit=$(awk 'found && $0 !~ /^[[:space:]]*(#|$)/ { print } /^exit[[:space:]]+0([[:space:]]|$)/ { found=1 }' "$ctrl_dir/postinst")
+          if [ -n "$after_exit" ]; then
+            echo "ERROR: unreachable code after 'exit 0' in DEBIAN/postinst:" >&2
+            printf '%s\n' "$after_exit" >&2
+            exit 1
+          fi
+
+          if grep -qiE 'example\.invalid|@localhost' "$ctrl_dir/control"; then
+            echo "ERROR: placeholder maintainer address found in DEBIAN/control" >&2
+            exit 1
+          fi
+          echo "All .deb sanity checks passed."
+
+      - name: cross-build release tarball (${{ matrix.target }})
+        if: ${{ !matrix.native_dist }}
+        env:
+          VER: ${{ needs.verify.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          cargo zigbuild --workspace --release --locked --target "$TARGET"
+
+          mkdir -p dist
+          stage="dist/presswork-${VER}"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+
+          # Use install-files if Makefile defines it (avoids host rebuild); fall back safely.
+          if grep -qE '^install-files:' Makefile; then
+            make install-files DESTDIR="$stage" TARGETDIR="target/${TARGET}/release" \
+              CHOWN=0 USER="$(id -un)" GROUP="$(id -gn)"
+          else
+            make install DESTDIR="$stage" TARGETDIR="target/${TARGET}/release" \
+              CARGO=: PROFILE=release USER="$(id -un)" GROUP="$(id -gn)"
+          fi
+
+          install -m 0755 install.sh "$stage/install.sh"
+          install -m 0644 README.md LICENSE-APACHE LICENSE-MIT NOTICE "$stage/"
+          tar -C dist --owner=0 --group=0 --numeric-owner \
+            -czf "dist/presswork-${VER}-${TARGET}.tar.gz" "presswork-${VER}"
+          rm -rf "$stage"
+          ls -lh "dist/presswork-${VER}-${TARGET}.tar.gz"
+
+      - name: upload build artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+          if-no-files-found: error
+
+  sbom:
+    name: generate CycloneDX SBOM
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+          persist-credentials: false
+
+      - name: generate workspace CycloneDX SBOM (syft)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: presswork-${{ needs.verify.outputs.version }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: validate CycloneDX SBOM JSON
+        env:
+          SBOM_FILE: presswork-${{ needs.verify.outputs.version }}.cdx.json
+        run: |
+          python3 -c '
+          import json, os
+          path = os.environ["SBOM_FILE"]
+          with open(path, encoding="utf-8") as f:
+              doc = json.load(f)
+          bom_fmt = doc.get("bomFormat")
+          spec_ver = doc.get("specVersion")
+          assert bom_fmt == "CycloneDX", f"unexpected bomFormat: {bom_fmt}"
+          comps = doc.get("components", [])
+          assert len(comps) > 0, "SBOM contains zero components"
+          print(f"SBOM OK: {path} (CycloneDX {spec_ver}, {len(comps)} components)")
+          '
+
+      - name: upload SBOM artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom-cyclonedx
+          path: presswork-${{ needs.verify.outputs.version }}.cdx.json
+          if-no-files-found: error
+
+  publish-release:
+    name: attest + publish GitHub release
+    needs: [verify, build-matrix, sbom]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: generate unified SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum *.tar.gz *.deb *.cdx.json > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: attest build provenance (SLSA)
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-path: |
+            release-assets/*.tar.gz
+            release-assets/*.deb
+            release-assets/*.cdx.json
+
+      - name: attest CycloneDX SBOM for release packages
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3.0.0
+        with:
+          subject-path: |
+            release-assets/*.tar.gz
+            release-assets/*.deb
+          sbom-path: release-assets/presswork-${{ needs.verify.outputs.version }}.cdx.json
+
+      - name: extract release notes from CHANGELOG.md
+        env:
+          VER: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          awk -v ver="$VER" '
             $0 ~ "^## \\[" ver "\\]" { found=1; next }
             found && /^## \[/ { exit }
             found { print }
           ' CHANGELOG.md > release-notes.md
           [ -s release-notes.md ] || echo "See CHANGELOG.md." > release-notes.md
 
-      - name: publish github release
+      - name: publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.deb dist/SHA256SUMS --clobber
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
           else
-            gh release create "$GITHUB_REF_NAME" \
-              --title "presswork ${GITHUB_REF_NAME}" \
+            gh release create "$RELEASE_TAG" \
+              --title "presswork ${RELEASE_TAG}" \
               --notes-file release-notes.md \
-              dist/*.tar.gz dist/*.deb dist/SHA256SUMS
+              release-assets/*
           fi
+
+  publish-crates:
+    name: publish crates to crates.io
+    needs: [verify, publish-release]
+    if: ${{ github.event_name == 'push' || inputs.publish_crates }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/publish.yml
+    with:
+      ref: ${{ needs.verify.outputs.tag }}
+      dry_run: false
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

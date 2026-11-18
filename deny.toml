@@ -1,16 +1,20 @@
 # cargo-deny config — supply-chain gates run in CI.
-# `cargo deny check` fails the build on advisories, license drift, or
-# unvetted dependency sources.
+# `cargo deny check` fails the build on advisories, license drift, banned
+# crates, or unvetted dependency sources.
 
 [advisories]
-# Known-vulnerable dependency versions always fail (implicit in 0.20);
-# these gates cover unmaintained crates and yanked versions.
-unmaintained = "workspace"
+# Known-vulnerable dependency versions always fail (implicit in cargo-deny 0.20).
+# Enforce unmaintained, unsound, and yanked checks across the full dependency graph.
+unmaintained = "all"
+unsound = "all"
 yanked = "deny"
 ignore = []
 
 [licenses]
-# Workspace licenses; dependencies must be under one of these.
+# Workspace licenses; dependencies must satisfy this SPDX allowlist.
+# Third-party license attribution details are documented in NOTICE.
+unused-allowed-license = "allow"
+confidence-threshold = 0.9
 allow = [
     "MIT",
     "MIT-0",
@@ -19,7 +23,6 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
-    "Unicode-DFS-2016",
     "Unicode-3.0",
     "Zlib",
     "CC0-1.0",
@@ -27,11 +30,19 @@ allow = [
 private = { ignore = true }
 
 [bans]
-# No duplicate major versions without an explicit skip.
+# Warn on duplicate major versions so bloat/drift stays visible.
 multiple-versions = "warn"
-# Internal members are `path`-only deps (no version req) which read as
-# "wildcards"; warn so real `*` ranges on published crates still surface.
+highlight = "all"
+# Allow internal path dependencies without explicit versions once unpublished
+# workspace crates carry `publish = false`. Because internal workspace crates
+# currently omit `publish = false`, cargo-deny treats their relative `path`
+# deps as public-crate wildcards; keep `wildcards = "warn"` here so
+# `cargo deny check` succeeds while CI's supply-chain job strictly rejects any
+# external `*` wildcard version requirement via `cargo metadata`. Flip to
+# `wildcards = "deny"` once unpublished internal Cargo.toml manifests set
+# `publish = false`.
 wildcards = "warn"
+allow-wildcard-paths = true
 deny = []
 skip = []
 

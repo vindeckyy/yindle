@@ -1,0 +1,65 @@
+Presswork
+Copyright 2026 Presswork Contributors
+
+================================================================================
+License Scoping
+================================================================================
+
+Unless explicitly noted otherwise below or in a specific file header, all
+original Presswork source code, scripts, packaging files, and documentation in
+this repository are dual-licensed at your option under either:
+
+  - Apache License, Version 2.0 (see LICENSE-APACHE)
+  - MIT License (see LICENSE-MIT)
+
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in Presswork by you, as defined in the Apache-2.0 license, shall
+be dual-licensed as above, without any additional terms or conditions.
+
+================================================================================
+Third-Party Components and Single-License Attributions
+================================================================================
+
+1. OpenPrinting CUPS MIME Database Files (Apache-2.0 ONLY)
+
+The following MIME type and conversion rule database files are derived from
+OpenPrinting CUPS (https://github.com/OpenPrinting/cups) and are licensed
+solely under the Apache License, Version 2.0 (NOT under the MIT License):
+
+  - data/mime/mime.types
+  - data/mime/mime.convs
+  - crates/mime-db/tests/fixtures/mime.types
+  - crates/mime-db/tests/fixtures/mime.convs
+
+Original copyright notices retained from upstream OpenPrinting CUPS:
+
+  Copyright © 2020-2024 by OpenPrinting.
+  Copyright © 2007-2017 by Apple Inc. (2007-2016 in mime.convs)
+  Copyright © 1997-2007 by Easy Software Products.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use these files except in compliance with the License.
+  You may obtain a copy of the License in LICENSE-APACHE or at:
+  https://www.apache.org/licenses/LICENSE-2.0
+
+Downstream distributors who elect the MIT License for Presswork's Rust source
+code must still comply with the Apache License, Version 2.0 when redistributing
+the above MIME database files, or substitute their own / distribution-provided
+MIME definitions.
+
+2. Protocol Standards and Trademark Notice
+
+Presswork is an independent implementation of the Internet Printing Protocol
+(IPP, RFC 8010 / RFC 8011 and PWG standards) and the CUPS 2.x configuration,
+spool, and filter/backend process contracts. Presswork is not affiliated with,
+sponsored by, or endorsed by OpenPrinting, The Linux Foundation, or Apple Inc.
+"CUPS" and "AirPrint" are trademarks of their respective owners.
+
+3. Third-Party Rust Crate Dependencies
+
+Third-party Rust dependencies are pinned in Cargo.lock and continuously checked
+via cargo-deny (see deny.toml) against an explicit SPDX license allowlist.
+Complete machine-readable dependency and license inventories are published as
+CycloneDX SBOM artifacts (*.cdx.json) with every GitHub Release.
