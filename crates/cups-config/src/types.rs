@@ -42,10 +42,12 @@ pub enum AuthLevel {
     /// Anonymous access.
     #[default]
     Anon = 0,
-    /// Must have a valid username/password.
-    User = 1,
-    /// Must also be in a named group.
-    Group = 2,
+    /// Any authenticated user (`Require valid-user` or `AuthType` without specific names).
+    ValidUser = 1,
+    /// Must match one of the configured user/group tokens (`Require user …`).
+    User = 2,
+    /// Must belong to one of the configured groups (`Require group …`).
+    Group = 3,
 }
 
 /// `CUPSD_AUTH_ALLOW/DENY` — which rule list wins when both match.
@@ -62,14 +64,14 @@ pub enum OrderType {
 }
 
 /// `CUPSD_AUTH_SATISFY_*` — whether host rules AND auth rules must hold.
-/// Upstream's default is `Any` (`CUPSD_AUTH_SATISFY_ANY`); only an explicit
-/// `Satisfy all` directive requires both.
+/// Upstream CUPS defaults to `All` (`CUPSD_AUTH_SATISFY_ALL`); only an
+/// explicit `Satisfy any` directive permits either host or auth alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Satisfy {
-    /// Both address and authentication must succeed.
-    All,
-    /// Either suffices — upstream default.
+    /// Both address and authentication must succeed (upstream default).
     #[default]
+    All,
+    /// Either host mask or authentication suffices (`Satisfy any`).
     Any,
 }
 
@@ -380,15 +382,19 @@ pub enum TlsVersion {
 /// A host allow/deny mask — `cupsd` stores these as `http_addrlist_t`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostMask {
+    /// Matches every IPv4 and IPv6 client address (`Allow from all` / `Deny from all`).
+    All,
+    /// Matches no client address (`Allow from none` / `Deny from none`).
+    None,
     /// IPv4/IPv6 network: address + netmask (up to 16 bytes each).
     Ip {
-        /// Address bytes (4 for v4, 16 for v6).
+        /// Address bytes (4 for v4, 16 for v6), host bits masked to zero.
         addr: IpNet,
         /// Mask bytes, same width as `addr`.
         mask: IpNet,
     },
     /// Host/domain name pattern (`.example.com`, `host.name`, `@LOCAL`,
-    /// interface name `@IFname`).
+    /// interface selector `@IF(name)`).
     Name(String),
 }
 

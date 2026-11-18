@@ -464,7 +464,7 @@ impl CupsFilesConfig {
             request_root: Some("/var/spool/cups".to_string()),
             cache_dir: Some("/var/cache/cups".to_string()),
             data_dir: Some("/usr/share/cups".to_string()),
-            document_root: Some("/usr/share/doc/cups".to_string()),
+            document_root: Some("/usr/share/cups/doc-root".to_string()),
             state_dir: Some("/run/cups".to_string()),
             temp_dir: None,
             printcap: Some("/etc/printcap".to_string()),
@@ -473,7 +473,12 @@ impl CupsFilesConfig {
             user: 65534,
             group: 65534,
             system_groups: Vec::new(),
-            system_group_names: Vec::new(),
+            system_group_names: vec![
+                "sys".to_string(),
+                "root".to_string(),
+                "wheel".to_string(),
+                "lpadmin".to_string(),
+            ],
             system_group_auth_key: Some("system.print.admin".to_string()),
             file_device: None,
             pass_env: Vec::new(),
@@ -497,8 +502,10 @@ fn cups_version_minor() -> u32 {
     5
 }
 
-/// Environment variables that may not be passed/set (`prohibited_env[]`).
-static PROHIBITED_ENV: &[&str] = &[
+/// Environment variables that may not be passed/set (`prohibited_env[]` plus
+/// dynamic-linker, shell, interpreter, and proxy injection variables).
+pub static PROHIBITED_ENV: &[&str] = &[
+    "ALL_PROXY",
     "APPLE_LANGUAGE",
     "AUTH_DOMAIN",
     "AUTH_INFO_REQUIRED",
@@ -506,6 +513,7 @@ static PROHIBITED_ENV: &[&str] = &[
     "AUTH_PASSWORD",
     "AUTH_UID",
     "AUTH_USERNAME",
+    "BASH_ENV",
     "CHARSET",
     "CLASS",
     "CLASSIFICATION",
@@ -521,20 +529,46 @@ static PROHIBITED_ENV: &[&str] = &[
     "CUPS_SERVERROOT",
     "CUPS_STATEDIR",
     "DEVICE_URI",
+    "ENV",
     "FINAL_CONTENT_TYPE",
+    "GCONV_PATH",
     "HOME",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "IFS",
     "LANG",
+    "LD_AUDIT",
+    "LD_DEBUG",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "NODE_OPTIONS",
+    "NO_PROXY",
+    "PATH",
+    "PERL5LIB",
     "PPD",
     "PRINTER",
     "PRINTER_INFO",
     "PRINTER_LOCATION",
     "PRINTER_STATE_REASONS",
+    "PYTHONPATH",
     "RIP_CACHE",
+    "RUBYLIB",
     "SERVER_ADMIN",
     "SOFTWARE",
     "TMPDIR",
     "USER",
 ];
+
+/// Returns `true` if `name` is a prohibited environment variable that must
+/// never be passed through `PassEnv` or set via `SetEnv` (case-insensitive,
+/// also rejecting any `LD_*` dynamic-linker variable).
+#[must_use]
+pub fn is_prohibited_env(name: &str) -> bool {
+    if name.len() >= 3 && name[..3].eq_ignore_ascii_case("LD_") {
+        return true;
+    }
+    PROHIBITED_ENV.iter().any(|p| p.eq_ignore_ascii_case(name))
+}
 
 /// Parse `cups-files.conf` — port of `read_cups_files_conf`.
 ///
@@ -553,6 +587,7 @@ pub fn read_cups_files_conf<R: BufRead>(
     let sink_file = filename.to_string();
     let mut lines = ConfLines::new(r);
     let mut ok = true;
+    let mut saw_system_group = false;
 
     macro_rules! err {
         ($line:expr, $($f:tt)*) => {{
@@ -686,7 +721,7 @@ pub fn read_cups_files_conf<R: BufRead>(
                 if var.is_empty() {
                     continue;
                 }
-                if PROHIBITED_ENV.contains(&var) {
+                if is_prohibited_env(var) {
                     err!(
                         ln,
                         "Environment variable \"{}\" cannot be passed through on line {} of {}.",
@@ -759,7 +794,7 @@ pub fn read_cups_files_conf<R: BufRead>(
                     ln,
                     filename
                 );
-            } else if PROHIBITED_ENV.contains(&env_name) {
+            } else if is_prohibited_env(env_name) {
                 err!(
                     ln,
                     "Environment variable \"{}\" cannot be set  on line {} of {}.",
@@ -773,6 +808,11 @@ pub fn read_cups_files_conf<R: BufRead>(
                     .push((env_name.to_string(), env_val.to_string()));
             }
         } else if name.eq_ignore_ascii_case("SystemGroup") && value.is_some() {
+            if !saw_system_group {
+                cfg.system_groups.clear();
+                cfg.system_group_names.clear();
+                saw_system_group = true;
+            }
             for gname in split_groups(value.unwrap_or("")) {
                 if let Some(gid) = resolve_group(&gname) {
                     cfg.system_groups.push(gid);
@@ -1765,19 +1805,14 @@ pub fn default_policy() -> Policy {
             "phone".into(),
         ],
         sub_access: vec!["@OWNER".into(), "@SYSTEM".into()],
-        sub_values: Vec::new(),
+        sub_values: vec![
+            "notify-events".into(),
+            "notify-pull-method".into(),
+            "notify-recipient-uri".into(),
+            "notify-subscriber-user-name".into(),
+            "notify-user-data".into(),
+        ],
     };
-    // Upstream quirk (conf.c): the "SubscriptionPrivateValues default"
-    // block adds the notify-* names to `p->job_attrs` — replicate.
-    for a in [
-        "notify-events",
-        "notify-pull-method",
-        "notify-recipient-uri",
-        "notify-subscriber-user-name",
-        "notify-user-data",
-    ] {
-        p.job_values.push(a.to_string());
-    }
 
     let anon_loc = |order| {
         let mut l = Location::new("<policy>");
@@ -1870,6 +1905,7 @@ pub fn default_policy() -> Policy {
             ops::CUPS_ACCEPT_JOBS,
             ops::CUPS_REJECT_JOBS,
             ops::CUPS_SET_DEFAULT,
+            ops::CUPS_GET_DEVICES,
         ],
         auth_loc(&["@SYSTEM"]),
     );
