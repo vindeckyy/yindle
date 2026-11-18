@@ -564,7 +564,7 @@ pub static PROHIBITED_ENV: &[&str] = &[
 /// also rejecting any `LD_*` dynamic-linker variable).
 #[must_use]
 pub fn is_prohibited_env(name: &str) -> bool {
-    if name.len() >= 3 && name[..3].eq_ignore_ascii_case("LD_") {
+    if name.len() >= 3 && name.as_bytes()[..3].eq_ignore_ascii_case(b"LD_") {
         return true;
     }
     PROHIBITED_ENV.iter().any(|p| p.eq_ignore_ascii_case(name))
@@ -1939,5 +1939,28 @@ pub fn default_listeners(cfg: &mut CupsdConfig) {
             addr: ListenAddr::Tcp("[::1]:631".parse().unwrap()),
             ssl: false,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_prohibited_env_multibyte_utf8_no_panic() {
+        // Fuzz reproducer b"\x00\n\xd4\x91" (2-byte UTF-8 U+0511 straddling byte index 3)
+        // plus realistic multi-byte names in PassEnv / SetEnv directives.
+        assert!(!is_prohibited_env("\0\n\u{0511}"));
+        assert!(!is_prohibited_env("ab\u{00e9}"));
+        assert!(is_prohibited_env("LD_PRELOAD"));
+        assert!(is_prohibited_env("ld_custom"));
+
+        let conf = "PassEnv ab\u{00e9}\nSetEnv ab\u{00e9} 1\n";
+        let (files, _, _) = crate::parse_cups_files_conf(conf.as_bytes(), "fuzz", "/tmp");
+        assert!(files.pass_env.iter().any(|v| v == "ab\u{00e9}"));
+        assert!(files
+            .set_env
+            .iter()
+            .any(|(k, v)| k == "ab\u{00e9}" && v == "1"));
     }
 }
