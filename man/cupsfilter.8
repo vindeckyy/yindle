@@ -1,0 +1,238 @@
+.TH CUPSFILTER 8 "2026-11-18" "Presswork 0.1.0" "System Administration"
+.SH NAME
+cupsfilter \- Presswork standalone CUPS MIME and PPD filter-chain converter
+.SH SYNOPSIS
+.B cupsfilter
+.RB [ \-\-list\-filters ]
+.RB [ \-c
+.IR cupsd.conf ]
+.RB [ \-d
+.IR printer ]
+.RB [ \-D ]
+.RB [ \-e ]
+.RB [ \-i
+.IR mime/type ]
+.RB [ \-j
+.IR job\-id [, N ]]
+.RB [ \-m
+.IR mime/type ]
+.RB [ \-n
+.IR copies ]
+.RB [ \-o
+.IR name=value ]
+.RB [ \-p
+.IR filename.ppd ]
+.RB [ \-P
+.IR filename.ppd ]
+.RB [ \-t
+.IR title ]
+.RB [ \-u ]
+.RB [ \-U
+.IR username ]
+.RI [ filename ]
+.br
+.B cupsfilter
+.RB [ \-h | \-\-help ]
+.br
+.B cupsfilter
+.RB [ \-V | \-\-version ]
+.SH DESCRIPTION
+.B cupsfilter
+converts a document from one MIME media type to another using the same MIME
+database
+.RI ( mime.types ", " mime.convs ", " local.types ", " local.convs ),
+PPD
+.B *cupsFilter
+/
+.B *cupsFilter2
+rules, and least-cost Dijkstra filter graph used by Presswork
+.BR cupsd (8).
+Converted output is written to standard output, while filter diagnostics appear
+on standard error.
+.PP
+When
+.I filename
+is omitted or given as
+.BR \- ,
+.B cupsfilter
+streams standard input to a secure temporary spool file (mode
+.BR 0600 ,
+automatically cleaned up on exit) so MIME auto-detection and multi-stage filter
+chains work identically to file inputs.
+.SH OPTIONS
+.TP
+.B \-\-list\-filters
+Print the resolved filter chain (one filter per line) to standard output and
+exit without executing any filter.
+Strictly read-only: preserves input and PPD files even if
+.B \-D
+or
+.B \-u
+was also supplied.
+.TP
+.BI \-c " cupsd.conf"
+Load configuration from an alternate
+.I cupsd.conf
+(and its sibling
+.IR cups\-files.conf )
+to resolve
+.BR DataDir ,
+.BR ServerRoot ,
+.BR ServerBin ,
+and
+.BR RequestRoot .
+.TP
+.BI \-d " printer"
+Use the named printer queue (resolving its PPD from
+.I ServerRoot/ppd/<printer>.ppd
+when
+.B \-p
+is not specified).
+.TP
+.B \-D
+Delete the input file after a successful conversion (ignored under
+.BR \-\-list\-filters ).
+.TP
+.B \-e
+Use every matching filter declared in the PPD file.
+.TP
+.BI \-i " mime/type"
+Override input MIME media type instead of auto-detecting via
+.IR mime.types .
+.TP
+.BI \-j " job\-id" \fR[\fP, N \fR]\fP
+Convert document
+.I N
+(default:
+.BR 1 )
+of spooled job
+.I job\-id
+from
+.IR RequestRoot .
+.TP
+.BI \-m " mime/type"
+Set the target output MIME media type (default:
+.BR application/pdf ).
+Use
+.B printer/foo
+or a concrete type such as
+.BR image/pwg\-raster ,
+.BR application/vnd.cups\-raster ,
+or
+.BR application/postscript .
+.TP
+.BI \-n " copies"
+Set the copy count passed to filters as
+.B argv[4]
+(positive integer; default:
+.BR 1 ).
+.TP
+.BI \-o " name=value"
+Pass a job option to the filter chain in
+.B argv[5]
+(bare names such as
+.B \-o landscape
+expand to
+.BR landscape=true ).
+May be repeated.
+.TP
+.BI \-p " filename.ppd" "\fR, \fP\-P " filename.ppd
+Specify the PPD file to use for
+.B *cupsFilter
+/
+.B *cupsFilter2
+resolution and the
+.B PPD
+environment variable.
+.B \-P
+is an alias for
+.BR \-p .
+.TP
+.BI \-t " title"
+Set the job title passed as
+.B argv[3]
+(defaults to the input filename).
+.TP
+.B \-u
+Delete the PPD file after a successful conversion (ignored under
+.BR \-\-list\-filters ).
+.TP
+.BI \-U " username"
+Set the username passed as
+.B argv[2]
+(defaults to the current user).
+.TP
+.BR \-h ", " \-\-help
+Show usage summary and exit with status 0.
+.TP
+.BR \-V ", " \-\-version
+Show Presswork version information and exit with status 0.
+.SH ENVIRONMENT
+.TP
+.B CUPS_SERVERROOT
+Override configuration directory (default:
+.IR /etc/cups ).
+.TP
+.B CUPS_DATADIR
+Override shared data / MIME directory (default:
+.IR /usr/share/cups ).
+.TP
+.B CUPS_SERVERBIN
+Override filter binary directory (default:
+.IR /usr/lib/cups ).
+.TP
+.B CUPS_REQUESTROOT
+Override spool directory used by
+.B \-j
+(default:
+.IR /var/spool/cups ).
+.TP
+.B TMPDIR
+Directory used for temporary stdin spool files.
+.SH EXIT STATUS
+.TP
+.B 0
+Conversion or
+.B \-\-list\-filters
+succeeded.
+.TP
+.B 1
+Invalid arguments, missing file/PPD, no valid conversion chain found in the
+MIME database, or a filter stage exited with a non-zero status.
+.SH EXAMPLES
+Inspect which filters would run to convert a text file to PDF:
+.PP
+.EX
+cupsfilter \-\-list\-filters \-m application/pdf /etc/hostname
+.EE
+.PP
+Convert a PostScript document to PDF using a specific printer's PPD:
+.PP
+.EX
+cupsfilter \-p /etc/cups/ppd/office.ppd \-m application/pdf input.ps > output.pdf
+.EE
+.PP
+Test filter chain resolution against a shadow configuration:
+.PP
+.EX
+cupsfilter \-\-list\-filters \-c /tmp/pw\-shadow/etc/cupsd.conf \-d office \-m image/pwg\-raster doc.pdf
+.EE
+.SH FILES
+.TP
+.I /usr/bin/cupsfilter
+Filter-chain utility.
+.TP
+.I /usr/share/cups/mime/mime.types
+.TQ
+.I /usr/share/cups/mime/mime.convs
+Standard MIME type and conversion rules.
+.TP
+.I /usr/lib/cups/filter/
+Installed filter executables (supplied by
+.B cups\-filters
+or printer drivers).
+.SH SEE ALSO
+.BR cupsd (8),
+.BR cupsd.conf (5),
+.BR cups\-files.conf (5),
+.BR lp (1)

@@ -1,0 +1,316 @@
+.TH CUPS-FILES.CONF 5 "2026-11-18" "Presswork 0.1.0" "File Formats"
+.SH NAME
+cups\-files.conf \- file, directory, privilege, and sandboxing configuration for Presswork cupsd
+.SH DESCRIPTION
+The
+.I cups\-files.conf
+file configures filesystem paths, file permissions, service accounts,
+environment filtering, device policy, and filter/backend sandboxing for
+.BR cupsd (8).
+It is normally located at
+.I /etc/cups/cups\-files.conf
+with mode
+.B 0640
+owned by
+.BR root:lp .
+.PP
+Keeping path and privilege directives separate from
+.BR cupsd.conf (5)
+prevents administrative HTTP edits to
+.I cupsd.conf
+from altering executable directories, log paths, or privilege boundaries.
+Verify changes with
+.B cupsd \-\-check\-config
+and
+.BR "cupsd doctor" .
+.SH DIRECTIVES
+.SS Accounts & Permissions
+.TP
+.BI User " username|uid"
+Unprivileged user account under which filters, backends, and helper processes
+execute (shipped default:
+.BR lp ).
+Presswork flags UID 0 as
+.B ROOT_WORKER_USER
+and refuses to run filters as root.
+.TP
+.BI Group " groupname|gid"
+Primary group under which filters, backends, and helper processes execute
+(shipped default:
+.BR lp ).
+.TP
+.BI SystemGroup " group [group ...]"
+Space-separated Unix groups granted
+.B @SYSTEM
+administrative privileges (shipped default:
+.BR lpadmin ;
+code fallback:
+.BR "sys root wheel lpadmin" ).
+.B Important:
+Never add the
+.B lp
+user to
+.BR lpadmin .
+.TP
+.BI SystemGroupAuthKey " key"
+macOS authorization key (parsed for compatibility; unused on Linux).
+.TP
+.BI RemoteRoot " username"
+Username mapped to unauthenticated remote root requests (default:
+.BR remroot ).
+.TP
+.BI ConfigFilePerm " mode"
+Octal permissions applied to written configuration files such as
+.I printers.conf
+and
+.I classes.conf
+(default:
+.BR 0640 ).
+.TP
+.BI LogFilePerm " mode"
+Octal permissions applied to log files (shipped default:
+.BR 0640 ).
+.TP
+.BI LogFileGroup " group|gid"
+Optional group ownership for log files.
+.SS Directory Layout
+.TP
+.BI ServerRoot " directory"
+Configuration root directory (default:
+.IR /etc/cups ).
+Must exist at parse time.
+.TP
+.BI ServerBin " directory"
+Root directory for helper daemons
+.RI ( daemon/ ),
+backends
+.RI ( backend/ ),
+filters
+.RI ( filter/ ),
+and CGIs
+.RI ( cgi\-bin/ )
+(default:
+.IR /usr/lib/cups ).
+Must exist at parse time.
+.TP
+.BI DataDir " directory"
+Shared read-only data root containing
+.IR mime/ ,
+.IR banners/ ,
+.IR drv/ ,
+and
+.I ppd/
+(default:
+.IR /usr/share/cups ).
+.TP
+.BI DocumentRoot " directory"
+Static web document root (unified default:
+.IR /usr/share/cups/doc\-root ).
+When empty and
+.B WebInterface Yes
+is set,
+.BR cupsd (8)
+serves its built-in read-only HTML status interface.
+.TP
+.BI RequestRoot " directory"
+Job spool directory storing
+.I c*
+control and
+.I d*
+document files (default:
+.IR /var/spool/cups ,
+mode 0710, lp:lp).
+.TP
+.BI CacheDir " directory"
+Cache directory for
+.I job.cache
+and derived state (default:
+.IR /var/cache/cups ,
+mode 0770, lp:lp).
+.TP
+.BI StateDir " directory"
+Runtime state directory for certificates and Unix sockets (default:
+.IR /run/cups ,
+mode 0755, lp:lp).
+.TP
+.BI TempDir " directory"
+Temporary directory for spooled HTTP request bodies and filter scratch files
+(default:
+.IR RequestRoot/tmp ).
+Must exist if explicitly configured.
+.TP
+.BI ServerKeychain " directory"
+Directory storing TLS certificate
+.RI ( server.crt )
+and private key
+.RI ( server.key )
+(default:
+.IR /etc/cups/ssl ,
+mode 0700, root:root).
+.SS Logs
+.TP
+.BI AccessLog " filename|syslog|stderr"
+Path for HTTP/IPP access log (default:
+.IR /var/log/cups/access_log ).
+.TP
+.BI ErrorLog " filename|syslog|stderr"
+Path for scheduler error and diagnostic log (default:
+.IR /var/log/cups/error_log ).
+.TP
+.BI PageLog " filename|syslog|stderr"
+Path for per-page accounting log (default:
+.IR /var/log/cups/page_log ).
+.SS Security, Sandboxing & Device Policy
+.TP
+.BI Sandboxing " strict|relaxed|off"
+Controls Linux Landlock and sandbox policy enforced by
+.B cups\-exec
+for filter and backend child processes (code default:
+.BR strict ;
+shipped
+.I cups\-files.conf.default
+sets
+.BR relaxed
+for broad third-party filter compatibility).
+Both
+.B strict
+and
+.B relaxed
+enforce privilege drop,
+.BR "umask 077" ,
+.BR setrlimit (2),
+and
+.BR PR_SET_NO_NEW_PRIVS .
+Setting
+.B off
+is flagged as
+.B SANDBOXING_OFF
+by
+.BR "cupsd \-\-check\-config" .
+.TP
+.BI FileDevice " Yes|No|^regex$"
+Controls whether
+.B file://
+device URIs are permitted (default:
+.BR No ,
+strictly enforced fail-closed in both
+.B cupsd
+and
+.BR cups\-backend\-file ).
+Setting
+.B Yes
+permits
+.B ^/dev/tty[A\-Za\-z0\-9._]+$
+or specify an explicit anchored regex pattern.
+Enabling
+.B FileDevice
+is flagged as
+.B FILE_DEVICE_ENABLED
+by
+.BR "cupsd \-\-check\-config" .
+.TP
+.BI PeerCred " On|Off|RootOnly"
+Controls kernel
+.B SO_PEERCRED
+authentication over Unix domain sockets (default:
+.BR On ).
+.TP
+.BI CreateSelfSignedCerts " Yes|No"
+Allow automatic self-signed TLS certificate generation in
+.B ServerKeychain
+only when both
+.I server.crt
+and
+.I server.key
+are absent (default:
+.BR Yes ).
+Set
+.B No
+when deploying CA-managed certificates.
+Presswork never overwrites existing certificates on parse error.
+.TP
+.BI PassEnv " var [var ...]"
+Allowlist of environment variables forwarded from
+.B cupsd
+to child processes.
+Security-sensitive variables \(en including all
+.B LD_*
+dynamic-linker variables,
+.BR PATH ,
+.BR IFS ,
+.BR BASH_ENV ,
+.BR ENV ,
+.BR GCONV_PATH ,
+.BR PYTHONPATH ,
+.BR PERL5LIB ,
+.BR RUBYLIB ,
+.BR NODE_OPTIONS ,
+.BR HTTP_PROXY ,
+.BR HTTPS_PROXY ,
+.BR ALL_PROXY ,
+.BR DEVICE_URI ,
+and internal
+.B CUPS_*
+/
+.B AUTH_*
+variables \(en are strictly prohibited and rejected at parse time.
+.TP
+.BI SetEnv " var value"
+Set an explicit environment variable for child processes (for example,
+.B "SetEnv CUPS_ALLOW_LOOPBACK_BACKENDS yes"
+to opt into loopback backend connections).
+Subject to the same prohibited variable list as
+.BR PassEnv .
+.SS Miscellaneous & Compatibility
+.TP
+.BI Printcap " [filename]"
+Path to legacy printcap file (shipped default:
+.IR /run/cups/printcap ).
+Parsed for compatibility.
+.TP
+.BI PrintcapFormat " bsd|plist|solaris"
+Format for legacy printcap output (default:
+.BR bsd ).
+.TP
+.BI StripUserDomain " Yes|No"
+Strip
+.I @domain
+suffixes from authenticated usernames (default:
+.BR No ).
+.TP
+.BI SyncOnClose " Yes|No"
+Call
+.BR fsync (2)
+before closing written state/config files (default:
+.BR No ;
+atomic spool and config writes always sync safely).
+.TP
+.BI FatalErrors " none|all|browse|config|listen|log|permissions"
+Specify which configuration diagnostic classes abort startup.
+.TP
+.BI OAuthServer " url"
+.TQ
+.BI OAuthScopes " scopes"
+.TQ
+.BI OAuthGroup " name filename"
+Parsed for CUPS 2.5 compatibility (built-in OIDC provider adapters are planned;
+custom
+.B TokenVerifier
+integrations use
+.BR crates/authn ).
+.SH DEPRECATED DIRECTIVES
+.TP
+.BR ServerCertificate ", " ServerKey
+Deprecated upstream; use
+.B ServerKeychain
+instead (flagged by
+.BR "cupsd \-\-check\-config" ).
+.SH FILES
+.I /etc/cups/cups\-files.conf
+.br
+.I /etc/cups/cups\-files.conf.default
+.SH SEE ALSO
+.BR cupsd (8),
+.BR cupsd.conf (5),
+.BR cupsfilter (8),
+.BR cups\-lpd (8)

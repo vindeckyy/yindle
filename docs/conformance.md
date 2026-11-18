@@ -23,7 +23,7 @@ source tree). Each `.test` file is run with
 | `identify-printer`, `identify-printer-display`, `identify-printer-multiple` | |
 | `ipp-backend` | |
 | `print-job`, `print-job-and-wait`, `print-job-deflate`, `print-job-gzip`, `print-job-hold`, `print-job-letter`, `print-job-manual`, `print-job-media-col`, `print-job-password` | end-to-end through filter→backend; `file` backend writes the document |
-| `print-uri` | `document-uri` (`file://`) fetch |
+| `print-uri` | non-`file://` network `document-uri` via configured fetcher (`file://` rejected fail-closed; see [`docs/deviations.md`](deviations.md)) |
 | `validate-job` | |
 | `create-printer-subscription` | pull (ippget) variant; push variant skips (no `-d recipient`) |
 | `get-ppd`, `get-ppd-printer` | `cups-driverd cat` streams the PPD body; `printer-uri` resolves the driverless `everywhere` PPD |
@@ -114,11 +114,13 @@ Both sides use upstream's real test harness shape discovered in
 `ipp://localhost:port/printers` with an all-allow `<Policy default>
 <Limit All>Order Allow,Deny</Limit></Policy>` - no `SO_PEERCRED` needed.
 
-That fixture alignment surfaced a real parity fix: upstream's default
-`Satisfy` is `any` (`cupsdIsAuthorized` only ANDs host+auth under an
-explicit `Satisfy all`); ours defaulted to `All`, which over-rejected
-anonymous-but-allowed ops. Now `cups-config::Satisfy::Any` is the
-default (`crates/cups-config/src/types.rs`).
+That fixture alignment also clarified a deliberate security divergence:
+upstream CUPS defaults to `Satisfy any`, whereas Presswork defaults to
+fail-closed `Satisfy all` (`crates/cups-config/src/types.rs`, documented
+in [`docs/deviations.md`](deviations.md)) so host-ACL rules cannot
+silently bypass `Require user @SYSTEM` / `@OWNER`. The differential
+fixture uses an explicit unauthenticated `<Limit All>` block matching
+upstream's `run-stp-tests.sh`.
 
 Current differential baseline (same fixture, both daemons): every test
 stock cupsd **passes**, presswork also passes - `get-printers*`,
