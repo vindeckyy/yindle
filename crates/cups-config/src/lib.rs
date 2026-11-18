@@ -10,15 +10,21 @@
 //! ```
 
 mod acl;
+mod audit;
 mod config;
 mod lexer;
 mod types;
 mod vars;
 
 pub use acl::{parse_aaa, Diag, Location, Severity};
+pub use audit::{
+    audit_config, audit_paths, audit_readers, AuditSeverity, AuditedDirective, ConfigAuditReport,
+    DirectiveStatus, SecurityFinding,
+};
 pub use config::{
-    default_listeners, default_policy, read_cups_files_conf, read_cupsd_conf, CupsFilesConfig,
-    CupsdConfig, DiagSink, Diagnostic, Diagnostics, Policy, PolicyOp,
+    default_listeners, default_policy, is_prohibited_env, read_cups_files_conf, read_cupsd_conf,
+    CupsFilesConfig, CupsdConfig, DiagSink, Diagnostic, Diagnostics, Policy, PolicyOp,
+    PROHIBITED_ENV,
 };
 pub use lexer::{conf_lines, ConfLine, ConfLines};
 pub use types::{
@@ -118,6 +124,7 @@ pub struct LoadOutcome {
 /// missing cups-files.conf → INFO + defaults; missing cupsd.conf →
 /// fatal. Applies the default-policy synthesis and listener defaults.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn load(paths: &Paths) -> LoadOutcome {
     let mut files = CupsFilesConfig::defaults();
     let mut cupsd = CupsdConfig::defaults();
@@ -169,6 +176,15 @@ pub fn load(paths: &Paths) -> LoadOutcome {
                 diagnostics: diags.entries,
                 ok: false,
             };
+        }
+    }
+
+    // Resolve default SystemGroup names to GIDs when not overridden in cups-files.conf.
+    if files.system_groups.is_empty() && !files.system_group_names.is_empty() {
+        for gname in &files.system_group_names {
+            if let Some(gid) = resolve_group(gname) {
+                files.system_groups.push(gid);
+            }
         }
     }
 
