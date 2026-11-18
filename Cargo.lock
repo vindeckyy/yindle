@@ -266,6 +266,9 @@ version = "0.1.0"
 [[package]]
 name = "cups-exec"
 version = "0.1.0"
+dependencies = [
+ "presswork-sys",
+]
 
 [[package]]
 name = "cups-log"
@@ -319,6 +322,12 @@ dependencies = [
 [[package]]
 name = "cupsfilter"
 version = "0.1.0"
+dependencies = [
+ "cups-config",
+ "mime-db",
+ "pipeline",
+ "presswork-sys",
+]
 
 [[package]]
 name = "data-encoding"
@@ -673,7 +682,9 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 name = "pipeline"
 version = "0.1.0"
 dependencies = [
+ "cups-config",
  "mime-db",
+ "presswork-sys",
 ]
 
 [[package]]
