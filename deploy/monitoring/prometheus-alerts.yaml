@@ -1,0 +1,141 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: presswork-alerts
+  labels:
+    app.kubernetes.io/name: presswork
+    app.kubernetes.io/component: monitoring
+    release: prometheus
+spec:
+  groups:
+    - name: presswork.availability
+      interval: 30s
+      rules:
+        - alert: CupsdDown
+          expr: up{job=~".*presswork.*"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            service: presswork
+            component: scheduler
+          annotations:
+            summary: "Presswork cupsd instance is down ({{ $labels.instance }})"
+            description: >-
+              Presswork print scheduler {{ $labels.instance }} in namespace
+              {{ $labels.namespace }} has been unreachable for more than 2 minutes.
+              Print submission and IPP polling are degraded or unavailable.
+            runbook_url: "https://github.com/vindeckyy/presswork/blob/main/docs/operations.md#cupsd-down"
+
+    - name: presswork.queues
+      interval: 30s
+      rules:
+        - alert: PrintQueueBacklog
+          expr: sum by (instance, namespace, printer) (presswork_jobs_pending) > 50
+          for: 10m
+          labels:
+            severity: warning
+            service: presswork
+            component: spooler
+          annotations:
+            summary: "Print queue backlog on {{ $labels.printer }} ({{ $value }} pending jobs)"
+            description: >-
+              Printer queue {{ $labels.printer }} on {{ $labels.instance }} has had
+              {{ $value }} pending jobs for over 10 minutes. Check printer offline
+              state, paused queues, or backend connectivity.
+            runbook_url: "https://github.com/vindeckyy/presswork/blob/main/docs/operations.md#print-queue-backlog"
+
+        - alert: HighJobFailureRate
+          expr: >-
+            (
+              sum by (instance, namespace) (rate(presswork_jobs_total{state=~"aborted|canceled-at-device"}[15m]))
+              /
+              clamp_min(sum by (instance, namespace) (rate(presswork_jobs_total[15m])), 1e-9)
+            ) > 0.10
+            and
+            sum by (instance, namespace) (increase(presswork_jobs_total[15m])) >= 5
+          for: 10m
+          labels:
+            severity: warning
+            service: presswork
+            component: pipeline
+          annotations:
+            summary: "High print job failure rate ({{ $value | humanizePercentage }})"
+            description: >-
+              More than 10% of print jobs on {{ $labels.instance }} failed or aborted
+              over the last 15 minutes. Inspect /var/log/cups/error_log for backend
+              exit codes or filter pipeline failures.
+            runbook_url: "https://github.com/vindeckyy/presswork/blob/main/docs/operations.md#high-job-failure-rate"
+
+        - alert: FilterLimitSaturated
+          expr: >-
+            (
+              presswork_filter_cost_current
+              /
+              clamp_min(presswork_filter_limit, 1)
+            ) > 0.90
+            and presswork_filter_limit > 0
+          for: 5m
+          labels:
+            severity: warning
+            service: presswork
+            component: pipeline
+          annotations:
+            summary: "FilterLimit saturated on {{ $labels.instance }} ({{ $value | humanizePercentage }})"
+            description: >-
+              Presswork filter pipeline cost on {{ $labels.instance }} has exceeded
+              90% of FilterLimit for 5 minutes. New jobs are being throttled; check
+              for stuck filters or raise FilterLimit if host CPU/RAM permits.
+            runbook_url: "https://github.com/vindeckyy/presswork/blob/main/docs/operations.md#filter-limit-saturated"
+
+    - name: presswork.security
+      interval: 30s
+      rules:
+        - alert: HighAuthFailures
+          expr: sum by (instance, namespace) (rate(presswork_auth_failures_total[5m])) > 5
+          for: 5m
+          labels:
+            severity: warning
+            service: presswork
+            component: authn
+          annotations:
+            summary: "Elevated authentication failures on {{ $labels.instance }}"
+            description: >-
+              Presswork instance {{ $labels.instance }} is seeing {{ printf "%.1f" $value }}
+              authentication failures per second over the last 5 minutes. Investigate
+              potential credential stuffing, misconfigured clients, or PAM/LDAP outages.
+            runbook_url: "https://github.com/vindeckyy/presswork/blob/main/docs/operations.md#high-auth-failures"
+
+    - name: presswork.storage
+      interval: 60s
+      rules:
+        - alert: SpoolDiskUsage
+          expr: >-
+            (
+              (
+                kubelet_volume_stats_used_bytes{persistentvolumeclaim=~".*spool.*presswork.*|.*presswork.*spool.*"}
+                /
+                clamp_min(kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~".*spool.*presswork.*|.*presswork.*spool.*"}, 1)
+              ) > 0.85
+            )
+            or
+            (
+              (
+                1 - (
+                  node_filesystem_avail_bytes{mountpoint="/var/spool/cups"}
+                  /
+                  clamp_min(node_filesystem_size_bytes{mountpoint="/var/spool/cups"}, 1)
+                )
+              ) > 0.85
+            )
+          for: 10m
+          labels:
+            severity: warning
+            service: presswork
+            component: storage
+          annotations:
+            summary: "Spool storage usage above 85% ({{ $value | humanizePercentage }})"
+            description: >-
+              Presswork spool volume (/var/spool/cups) is above 85% capacity.
+              Purge stale completed job documents (PreserveJobFiles) or expand the
+              spool PVC before new print submissions fail with ENOSPC.
+            runbook_url: "https://github.com/vindeckyy/presswork/blob/main/docs/operations.md#spool-disk-usage"

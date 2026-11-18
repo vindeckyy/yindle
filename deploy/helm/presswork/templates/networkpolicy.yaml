@@ -1,0 +1,60 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "presswork.fullname" . }}
+  labels:
+    {{- include "presswork.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "presswork.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 631
+      {{- if .Values.networkPolicy.ingress.from }}
+      from:
+        {{- toYaml .Values.networkPolicy.ingress.from | nindent 8 }}
+      {{- else }}
+      from:
+        - podSelector: {}
+      {{- end }}
+  egress:
+    {{- if .Values.networkPolicy.egress.allowDns }}
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
+    {{- if or .Values.networkPolicy.egress.allowIpp .Values.networkPolicy.egress.allowLpd .Values.networkPolicy.egress.allowJetDirect .Values.networkPolicy.egress.allowSnmp }}
+    - ports:
+        {{- if .Values.networkPolicy.egress.allowIpp }}
+        - protocol: TCP
+          port: 631
+        {{- end }}
+        {{- if .Values.networkPolicy.egress.allowLpd }}
+        - protocol: TCP
+          port: 515
+        {{- end }}
+        {{- if .Values.networkPolicy.egress.allowJetDirect }}
+        - protocol: TCP
+          port: 9100
+        {{- end }}
+        {{- if .Values.networkPolicy.egress.allowSnmp }}
+        - protocol: UDP
+          port: 161
+        {{- end }}
+      {{- if .Values.networkPolicy.egress.printerCidrs }}
+      to:
+        {{- range .Values.networkPolicy.egress.printerCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+{{- end }}

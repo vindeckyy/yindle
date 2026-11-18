@@ -9,8 +9,7 @@ override_dh_auto_build:
 	cargo build --workspace --release --frozen
 
 override_dh_auto_install:
-	$(MAKE) install DESTDIR=$(CURDIR)/debian/presswork PROFILE=release \
-	    USER=lp GROUP=lp
+	$(MAKE) install-files DESTDIR=$(CURDIR)/debian/presswork PROFILE=release CHOWN=0
 
 override_dh_auto_test:
 	# The conformance suite runs against a live daemon; run unit tests only.

@@ -1,6 +1,7 @@
 #!/bin/sh
-# Create the `lp` account like upstream cups.
-addgroup -S lp 2>/dev/null
-adduser -S -D -H -h /var/spool/cups -s /sbin/nologin -G lp -g "Printing system" lp 2>/dev/null
-addgroup lp lp 2>/dev/null
+# Create the `lp` account/group and `lpadmin` admin group.
+# `lp` is intentionally NOT added to `lpadmin`.
+addgroup -S lp 2>/dev/null || true
+adduser -S -D -H -h /var/spool/cups -s /sbin/nologin -G lp -g "Printing system" lp 2>/dev/null || true
+addgroup -S lpadmin 2>/dev/null || true
 exit 0

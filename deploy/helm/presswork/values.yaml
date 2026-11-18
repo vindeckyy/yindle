@@ -1,0 +1,249 @@
+# Default values for Presswork Helm chart.
+# Override for production deployments with `helm upgrade --install -f custom-values.yaml`.
+
+# StatefulSet replica count. Keep at 1 per queue group unless sharding queues
+# across independent StatefulSets or running an active-passive print topology.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/vindeckyy/presswork
+  pullPolicy: IfNotPresent
+  # Overrides the image tag (defaults to Chart.appVersion when empty).
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  # Presswork does not talk to the Kubernetes API.
+  automount: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+# Least-privilege non-root pod security context matching Dockerfile UID/GID 631 (lp).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 631
+  runAsGroup: 631
+  fsGroup: 631
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+    add:
+      - NET_BIND_SERVICE
+
+service:
+  type: ClusterIP
+  port: 631
+  # Optional nodePort when service.type is NodePort.
+  nodePort: null
+  annotations: {}
+
+# Health and readiness probes against Presswork's HTTP endpoints.
+probes:
+  liveness:
+    enabled: true
+    path: /healthz
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    path: /readyz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  startup:
+    enabled: true
+    path: /healthz
+    periodSeconds: 2
+    timeoutSeconds: 3
+    failureThreshold: 30
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+terminationGracePeriodSeconds: 30
+
+extraEnv: []
+
+# Persistent storage for print spool (/var/spool/cups) and mutable config
+# (/etc/cups for printers.conf, PPD cache, and TLS certs).
+persistence:
+  spool:
+    enabled: true
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 10Gi
+    annotations: {}
+  config:
+    enabled: true
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 1Gi
+    annotations: {}
+  logs:
+    enabled: false
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 2Gi
+    annotations: {}
+
+# PodDisruptionBudget protects print availability during voluntary node drains.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  # maxUnavailable: 0
+
+# Prometheus Operator ServiceMonitor (enable when kube-prometheus-stack /
+# Prometheus Operator CRDs are installed in the cluster).
+serviceMonitor:
+  enabled: false
+  namespace: ""
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics
+  scheme: http
+  labels: {}
+  relabelings: []
+  metricRelabelings: []
+
+# Least-privilege NetworkPolicy restricting ingress IPP clients and egress
+# printer protocols (DNS, IPP/IPPS 631, LPD 515, JetDirect/raw 9100, SNMP 161).
+networkPolicy:
+  enabled: true
+  ingress:
+    # Restrict IPP/metrics callers via podSelector/namespaceSelector or CIDRs.
+    # Empty list defaults to allowing same-namespace pods on port 631.
+    from: []
+  egress:
+    # Restrict printer destinations to explicit subnets (e.g., ["10.20.0.0/16"]).
+    # When empty, allows egress on standard printer ports to any private/routable destination.
+    printerCidrs: []
+    allowDns: true
+    allowIpp: true
+    allowLpd: true
+    allowJetDirect: true
+    allowSnmp: false
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Configuration rendered into the ConfigMap and mounted into /etc/cups.
+config:
+  cupsdConf: |
+    LogLevel info
+    MaxLogSize 0
+    ErrorPolicy retry-job
+
+    Listen 0.0.0.0:631
+    Listen /run/cups/cups.sock
+
+    Browsing No
+    BrowseLocalProtocols none
+    DefaultAuthType Basic
+    DefaultShared No
+    WebInterface Yes
+
+    <Location />
+      Order allow,deny
+      Allow from all
+    </Location>
+
+    <Location /admin>
+      AuthType Default
+      Require user @SYSTEM
+      Satisfy all
+      Order allow,deny
+      Allow from @LOCAL
+    </Location>
+
+    <Location /admin/conf>
+      AuthType Default
+      Require user @SYSTEM
+      Satisfy all
+      Order allow,deny
+      Allow from @LOCAL
+    </Location>
+
+    <Policy default>
+      JobPrivateAccess default
+      JobPrivateValues default
+      SubscriptionPrivateAccess default
+      SubscriptionPrivateValues default
+
+      <Limit Create-Job Print-Job Print-URI Validate-Job>
+        Order deny,allow
+      </Limit>
+
+      <Limit Send-Document Send-URI Hold-Job Release-Job Restart-Job Purge-Jobs Set-Job-Attributes Create-Job-Subscriptions Renew-Subscription Cancel-Subscription Get-Notifications Reprocess-Job Cancel-Current-Job Suspend-Current-Job Resume-Job Cancel-My-Jobs Close-Job CUPS-Move-Job CUPS-Get-Document>
+        Require user @OWNER @SYSTEM
+        Satisfy all
+        Order deny,allow
+      </Limit>
+
+      <Limit CUPS-Add-Modify-Printer CUPS-Delete-Printer CUPS-Add-Modify-Class CUPS-Delete-Class CUPS-Set-Default CUPS-Get-Devices>
+        AuthType Default
+        Require user @SYSTEM
+        Satisfy all
+        Order deny,allow
+      </Limit>
+
+      <Limit Pause-Printer Resume-Printer Enable-Printer Disable-Printer Pause-Printer-After-Current-Job Hold-New-Jobs Release-Held-New-Jobs Deactivate-Printer Activate-Printer Restart-Printer Shutdown-Printer Startup-Printer Promote-Job Schedule-Job-After Cancel-Jobs CUPS-Accept-Jobs CUPS-Reject-Jobs>
+        AuthType Default
+        Require user @SYSTEM
+        Satisfy all
+        Order deny,allow
+      </Limit>
+
+      <Limit Cancel-Job CUPS-Authenticate-Job>
+        Require user @OWNER @SYSTEM
+        Satisfy all
+        Order deny,allow
+      </Limit>
+
+      <Limit All>
+        Order deny,allow
+      </Limit>
+    </Policy>
+  cupsFilesConf: |
+    User lp
+    Group lp
+    SystemGroup lpadmin
+    ServerRoot /etc/cups
+    RequestRoot /var/spool/cups
+    CacheDir /var/cache/cups
+    StateDir /run/cups
+    ServerBin /usr/lib/cups
+    DataDir /usr/share/cups
+    DocumentRoot /usr/share/cups/doc-root
+    ConfigFilePerm 0640
+    LogFilePerm 0640
+    AccessLog /var/log/cups/access_log
+    ErrorLog /var/log/cups/error_log
+    PageLog /var/log/cups/page_log
+    Sandboxing relaxed
+    FileDevice No

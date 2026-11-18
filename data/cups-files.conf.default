@@ -16,7 +16,11 @@ CacheDir /var/cache/cups
 StateDir /run/cups
 ServerBin /usr/lib/cups
 DataDir /usr/share/cups
-DocumentRoot /usr/share/cups/docroot
+DocumentRoot /usr/share/cups/doc-root
+
+# File permissions for generated configuration and log files.
+ConfigFilePerm 0640
+LogFilePerm 0640
 
 # Printcap for legacy lpd clients.
 Printcap /run/cups/printcap

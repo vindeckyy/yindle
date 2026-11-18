@@ -1,5 +1,10 @@
-# presswork — install target honoring the FHS perm map.
-# `make && make install DESTDIR=…` produces the layout distro packages ship.
+# presswork — build, test, coverage-gate, and FHS install targets.
+#
+# Standard root install:
+#   make && sudo make install
+# Unprivileged / packager staging (no cargo rebuild, no chown):
+#   cargo build --workspace --release --locked
+#   make install-files DESTDIR=/path/to/stage PROFILE=release CHOWN=0
 
 PREFIX        ?= /usr
 DESTDIR       ?=
@@ -10,26 +15,45 @@ DATADIR       ?= $(PREFIX)/share/cups
 DOCDIR        ?= $(PREFIX)/share/doc/presswork
 MANDIR        ?= $(PREFIX)/share/man
 UNITDIR       ?= $(PREFIX)/lib/systemd/system
+TMPFILESDIR   ?= $(PREFIX)/lib/tmpfiles.d
+SYSUSERSDIR   ?= $(PREFIX)/lib/sysusers.d
 SYSCONFDIR    ?= /etc/cups
 PAMDIR        ?= /etc/pam.d
+LOGROTATEDIR  ?= /etc/logrotate.d
 SPOOLDIR      ?= /var/spool/cups
 LOGDIR        ?= /var/log/cups
 CACHEDIR      ?= /var/cache/cups
 RUNDIR        ?= /run/cups
 USER          ?= lp
 GROUP         ?= lp
+CHOWN         ?= 1
+INSTALL_SYSTEMD ?= 1
+INSTALL_DOCS  ?= 1
+THRESHOLD     ?= 95
 
 CARGO         ?= cargo
+STRIP         ?= strip
 PROFILE       ?= release
 TARGETDIR     ?= target/$(PROFILE)
 
-# The shipped binaries → their install locations (ServerBin layout).
+ifeq ($(CHOWN),1)
+  INSTALL_OWNER_LP := -o $(USER) -g $(GROUP)
+  INSTALL_GROUP_LP := -g $(GROUP)
+else
+  INSTALL_OWNER_LP :=
+  INSTALL_GROUP_LP :=
+endif
+
+# Shipped binaries -> their FHS install locations (ServerBin layout).
 DAEMONS       := cups-deviced cups-driverd
+HELPERS       := cups-exec cups-lpd
 BACKENDS      := socket file ipp lpd snmp usb dnssd serial parallel
 BIN_PROGS     := cupsfilter
-HELPERS       := cups-exec cups-lpd
+SYSTEMD_UNITS := cups.service cups.socket cups.path cups-lpd@.service cups-lpd.socket
+MIME_FILES    := mime.types mime.convs
 
-.PHONY: all build install uninstall test check-fmt clippy
+.PHONY: all build install install-files install-strip uninstall \
+        test check-fmt clippy conformance coverage test-gate
 
 all: build
 
@@ -37,71 +61,177 @@ build:
 	$(CARGO) build --workspace --profile $(PROFILE)
 
 # ---- install -------------------------------------------------------------
-# Perm map (upstream cups install):
-#   sbin/cupsd        0755 root:root
-#   daemon/*          0755 root:root   (cups-deviced/cups-driverd helpers)
-#   backend/*         0755 root:root   (usb/parallel stay 0700 historically)
-#   filter/ notifier/ 0755 root:root   (empty dirs for site filters)
-#   bin/cupsfilter    0755 root:root
-#   etc/cups          0755 root:lp     (cupsd.conf 0640, printers.conf 0600)
-#   spool/log/cache/run  lp:lp         (see perms below)
-install: build
-	install -d $(DESTDIR)$(SBINDIR) $(DESTDIR)$(BINDIR)
-	install -m 0755 $(TARGETDIR)/cupsd $(DESTDIR)$(SBINDIR)/cupsd
-	# ServerBin helpers.
-	install -d $(DESTDIR)$(SERVERBIN)/daemon $(DESTDIR)$(SERVERBIN)/backend \
-	           $(DESTDIR)$(SERVERBIN)/filter $(DESTDIR)$(SERVERBIN)/notifier \
-	           $(DESTDIR)$(SERVERBIN)/driver $(DESTDIR)$(SERVERBIN)/cgi-bin
-	for d in $(DAEMONS); do \
-	    install -m 0755 $(TARGETDIR)/$$d $(DESTDIR)$(SERVERBIN)/daemon/$$d; done
-	for h in $(HELPERS); do \
-	    install -m 0755 $(TARGETDIR)/$$h $(DESTDIR)$(SERVERBIN)/daemon/$$h 2>/dev/null || \
-	    install -m 0755 $(TARGETDIR)/$$h $(DESTDIR)$(SERVERBIN)/$$h; done
-	for b in $(BACKENDS); do \
-	    install -m 0755 $(TARGETDIR)/$$b $(DESTDIR)$(SERVERBIN)/backend/$$b 2>/dev/null || true; done
-	# usb + parallel backends are mode 0700 upstream (device access).
-	chmod 0700 $(DESTDIR)$(SERVERBIN)/backend/usb 2>/dev/null || true
-	chmod 0700 $(DESTDIR)$(SERVERBIN)/backend/parallel 2>/dev/null || true
-	for b in $(BIN_PROGS); do \
-	    install -m 0755 $(TARGETDIR)/$$b $(DESTDIR)$(BINDIR)/$$b; done
-	# Data files (mime db, banners, drv, ppd dirs).
-	install -d $(DESTDIR)$(DATADIR)/mime $(DESTDIR)$(DATADIR)/banners \
-	           $(DESTDIR)$(DATADIR)/drv $(DESTDIR)$(DATADIR)/ppd \
-	           $(DESTDIR)$(DATADIR)/data $(DESTDIR)$(DATADIR)/templates \
-	           $(DESTDIR)$(DATADIR)/www
-	-[ -d data/mime ] && install -m 0644 data/mime/* $(DESTDIR)$(DATADIR)/mime/ || true
-	-[ -d data/banners ] && install -m 0644 data/banners/* $(DESTDIR)$(DATADIR)/banners/ || true
-	# Config tree.
-	install -d -m 0755 $(DESTDIR)$(SYSCONFDIR) $(DESTDIR)$(SYSCONFDIR)/ppd \
-	           $(DESTDIR)$(SYSCONFDIR)/ssl $(DESTDIR)$(SYSCONFDIR)/interfaces
-	-chmod 0700 $(DESTDIR)$(SYSCONFDIR)/ssl
-	-[ -f data/cupsd.conf.default ] && \
-	    install -m 0640 -g $(GROUP) data/cupsd.conf.default $(DESTDIR)$(SYSCONFDIR)/cupsd.conf || true
-	-[ -f data/cups-files.conf.default ] && \
-	    install -m 0640 -g $(GROUP) data/cups-files.conf.default $(DESTDIR)$(SYSCONFDIR)/cups-files.conf || true
-	# Spool/log/cache/run — lp-owned.
-	install -d -m 0710 -o $(USER) -g $(GROUP) $(DESTDIR)$(SPOOLDIR) $(DESTDIR)$(SPOOLDIR)/tmp
-	install -d -m 0755 -o $(USER) -g $(GROUP) $(DESTDIR)$(LOGDIR)
-	install -d -m 0770 -o $(USER) -g $(GROUP) $(DESTDIR)$(CACHEDIR) $(DESTDIR)$(CACHEDIR)/rss
-	install -d -m 0755 -o $(USER) -g $(GROUP) $(DESTDIR)$(RUNDIR) $(DESTDIR)$(RUNDIR)/certs
-	# systemd units + PAM.
-	install -d $(DESTDIR)$(UNITDIR) $(DESTDIR)$(PAMDIR)
-	-for u in data/systemd/*.service data/systemd/*.socket data/systemd/*.path; do \
-	    install -m 0644 $$u $(DESTDIR)$(UNITDIR)/; done
-	-[ -f packaging/pam/cups ] && install -m 0644 packaging/pam/cups $(DESTDIR)$(PAMDIR)/cups || true
-	# Docs.
-	install -d $(DESTDIR)$(DOCDIR)
-	install -m 0644 README.md docs/conformance.md docs/deviations.md \
-	    SECURITY.md CHANGELOG.md $(DESTDIR)$(DOCDIR)/ 2>/dev/null || true
+# Perm map (upstream CUPS FHS install):
+#   sbin/cupsd           0755 root:root
+#   daemon/*             0755 root:root   (cups-deviced/cups-driverd/cups-exec/cups-lpd)
+#   backend/*            0755 root:root   (usb/parallel are 0700 for device access)
+#   filter/ notifier/    0755 root:root   (dirs for external/site filters)
+#   bin/cupsfilter       0755 root:root
+#   etc/cups             0755 root:lp     (cupsd.conf 0640, ssl 0700 root:root)
+#   spool/log/cache/run  lp:lp            (explicit modes below)
+install: build install-files
 
+install-files:
+	install -d -m 0755 "$(DESTDIR)$(SBINDIR)" "$(DESTDIR)$(BINDIR)"
+	install -m 0755 "$(TARGETDIR)/cupsd" "$(DESTDIR)$(SBINDIR)/cupsd"
+	# ServerBin helpers and backends.
+	install -d -m 0755 \
+		"$(DESTDIR)$(SERVERBIN)/daemon" \
+		"$(DESTDIR)$(SERVERBIN)/backend" \
+		"$(DESTDIR)$(SERVERBIN)/filter" \
+		"$(DESTDIR)$(SERVERBIN)/notifier" \
+		"$(DESTDIR)$(SERVERBIN)/driver" \
+		"$(DESTDIR)$(SERVERBIN)/cgi-bin"
+	for d in $(DAEMONS) $(HELPERS); do \
+		install -m 0755 "$(TARGETDIR)/$$d" "$(DESTDIR)$(SERVERBIN)/daemon/$$d"; \
+	done
+	for b in $(BACKENDS); do \
+		install -m 0755 "$(TARGETDIR)/$$b" "$(DESTDIR)$(SERVERBIN)/backend/$$b"; \
+	done
+	# usb + parallel backends are mode 0700 upstream (direct device access).
+	chmod 0700 "$(DESTDIR)$(SERVERBIN)/backend/usb"
+	chmod 0700 "$(DESTDIR)$(SERVERBIN)/backend/parallel"
+	for p in $(BIN_PROGS); do \
+		install -m 0755 "$(TARGETDIR)/$$p" "$(DESTDIR)$(BINDIR)/$$p"; \
+	done
+	# Data files (MIME DB, banners, drv, ppd, doc-root).
+	install -d -m 0755 \
+		"$(DESTDIR)$(DATADIR)/mime" \
+		"$(DESTDIR)$(DATADIR)/banners" \
+		"$(DESTDIR)$(DATADIR)/drv" \
+		"$(DESTDIR)$(DATADIR)/ppd" \
+		"$(DESTDIR)$(DATADIR)/data" \
+		"$(DESTDIR)$(DATADIR)/templates" \
+		"$(DESTDIR)$(DATADIR)/doc-root"
+	for f in $(MIME_FILES); do \
+		install -m 0644 "data/mime/$$f" "$(DESTDIR)$(DATADIR)/mime/$$f"; \
+	done
+	if [ -d data/banners ]; then \
+		for f in data/banners/*; do \
+			[ -f "$$f" ] && install -m 0644 "$$f" "$(DESTDIR)$(DATADIR)/banners/"; \
+		done; \
+	fi
+	# Configuration tree — never overwrite existing cupsd.conf or cups-files.conf.
+	install -d -m 0755 $(INSTALL_GROUP_LP) "$(DESTDIR)$(SYSCONFDIR)"
+	install -d -m 0755 "$(DESTDIR)$(SYSCONFDIR)/ppd" "$(DESTDIR)$(SYSCONFDIR)/interfaces"
+	install -d -m 0700 "$(DESTDIR)$(SYSCONFDIR)/ssl"
+	install -m 0640 $(INSTALL_GROUP_LP) data/cupsd.conf.default \
+		"$(DESTDIR)$(SYSCONFDIR)/cupsd.conf.default"
+	install -m 0640 $(INSTALL_GROUP_LP) data/cups-files.conf.default \
+		"$(DESTDIR)$(SYSCONFDIR)/cups-files.conf.default"
+	if [ ! -e "$(DESTDIR)$(SYSCONFDIR)/cupsd.conf" ]; then \
+		install -m 0640 $(INSTALL_GROUP_LP) data/cupsd.conf.default \
+			"$(DESTDIR)$(SYSCONFDIR)/cupsd.conf"; \
+	else \
+		echo "Preserving existing $(DESTDIR)$(SYSCONFDIR)/cupsd.conf (see cupsd.conf.default)"; \
+	fi
+	if [ ! -e "$(DESTDIR)$(SYSCONFDIR)/cups-files.conf" ]; then \
+		install -m 0640 $(INSTALL_GROUP_LP) data/cups-files.conf.default \
+			"$(DESTDIR)$(SYSCONFDIR)/cups-files.conf"; \
+	else \
+		echo "Preserving existing $(DESTDIR)$(SYSCONFDIR)/cups-files.conf (see cups-files.conf.default)"; \
+	fi
+	# Mutable spool/log/cache/run trees.
+	install -d -m 0710 $(INSTALL_OWNER_LP) "$(DESTDIR)$(SPOOLDIR)" "$(DESTDIR)$(SPOOLDIR)/tmp"
+	install -d -m 0755 $(INSTALL_OWNER_LP) "$(DESTDIR)$(LOGDIR)"
+	install -d -m 0770 $(INSTALL_OWNER_LP) "$(DESTDIR)$(CACHEDIR)" "$(DESTDIR)$(CACHEDIR)/rss"
+	install -d -m 0755 $(INSTALL_OWNER_LP) "$(DESTDIR)$(RUNDIR)" "$(DESTDIR)$(RUNDIR)/certs"
+	# systemd units, tmpfiles.d, sysusers.d.
+	if [ "$(INSTALL_SYSTEMD)" = "1" ]; then \
+		install -d -m 0755 "$(DESTDIR)$(UNITDIR)" "$(DESTDIR)$(TMPFILESDIR)" "$(DESTDIR)$(SYSUSERSDIR)"; \
+		for u in $(SYSTEMD_UNITS); do \
+			install -m 0644 "data/systemd/$$u" "$(DESTDIR)$(UNITDIR)/$$u"; \
+		done; \
+		install -m 0644 data/tmpfiles.d/presswork.conf "$(DESTDIR)$(TMPFILESDIR)/presswork.conf"; \
+		install -m 0644 data/sysusers.d/presswork.conf "$(DESTDIR)$(SYSUSERSDIR)/presswork.conf"; \
+	fi
+	# PAM and logrotate configuration (preserve existing live configs).
+	install -d -m 0755 "$(DESTDIR)$(PAMDIR)" "$(DESTDIR)$(LOGROTATEDIR)"
+	if [ ! -e "$(DESTDIR)$(PAMDIR)/cups" ]; then \
+		install -m 0644 packaging/pam/cups "$(DESTDIR)$(PAMDIR)/cups"; \
+	else \
+		echo "Preserving existing $(DESTDIR)$(PAMDIR)/cups"; \
+	fi
+	if [ ! -e "$(DESTDIR)$(LOGROTATEDIR)/presswork" ]; then \
+		install -m 0644 data/logrotate.d/presswork "$(DESTDIR)$(LOGROTATEDIR)/presswork"; \
+	else \
+		echo "Preserving existing $(DESTDIR)$(LOGROTATEDIR)/presswork"; \
+	fi
+	# Man pages (installed automatically when man/ is present).
+	if [ -d man ]; then \
+		for f in man/*.[1-8] man/man[1-8]/*.[1-8]; do \
+			[ -f "$$f" ] || continue; \
+			sec=$${f##*.}; \
+			install -d -m 0755 "$(DESTDIR)$(MANDIR)/man$$sec"; \
+			install -m 0644 "$$f" "$(DESTDIR)$(MANDIR)/man$$sec/"; \
+		done; \
+	fi
+	# Documentation.
+	if [ "$(INSTALL_DOCS)" = "1" ]; then \
+		install -d -m 0755 "$(DESTDIR)$(DOCDIR)"; \
+		for doc in README.md SECURITY.md CHANGELOG.md LICENSE-APACHE LICENSE-MIT \
+		           docs/conformance.md docs/deviations.md; do \
+			[ -f "$$doc" ] && install -m 0644 "$$doc" "$(DESTDIR)$(DOCDIR)/"; \
+		done; \
+	fi
+
+install-strip: install-files
+	$(STRIP) "$(DESTDIR)$(SBINDIR)/cupsd"
+	for d in $(DAEMONS) $(HELPERS); do \
+		$(STRIP) "$(DESTDIR)$(SERVERBIN)/daemon/$$d"; \
+	done
+	for b in $(BACKENDS); do \
+		$(STRIP) "$(DESTDIR)$(SERVERBIN)/backend/$$b"; \
+	done
+	for p in $(BIN_PROGS); do \
+		$(STRIP) "$(DESTDIR)$(BINDIR)/$$p"; \
+	done
+
+# Remove installed binaries, data, units, docs, and default templates.
+# User configuration (/etc/cups/*.conf) and spool/log state are preserved.
 uninstall:
-	rm -f $(DESTDIR)$(SBINDIR)/cupsd
-	-for d in $(DAEMONS) $(HELPERS); do rm -f $(DESTDIR)$(SERVERBIN)/daemon/$$d; done
-	-for b in $(BACKENDS); do rm -f $(DESTDIR)$(SERVERBIN)/backend/$$b; done
-	-for b in $(BIN_PROGS); do rm -f $(DESTDIR)$(BINDIR)/$$b; done
+	rm -f "$(DESTDIR)$(SBINDIR)/cupsd"
+	for d in $(DAEMONS) $(HELPERS); do \
+		rm -f "$(DESTDIR)$(SERVERBIN)/daemon/$$d"; \
+	done
+	for b in $(BACKENDS); do \
+		rm -f "$(DESTDIR)$(SERVERBIN)/backend/$$b"; \
+	done
+	for p in $(BIN_PROGS); do \
+		rm -f "$(DESTDIR)$(BINDIR)/$$p"; \
+	done
+	for f in $(MIME_FILES); do \
+		rm -f "$(DESTDIR)$(DATADIR)/mime/$$f"; \
+	done
+	rm -f "$(DESTDIR)$(SYSCONFDIR)/cupsd.conf.default" \
+		"$(DESTDIR)$(SYSCONFDIR)/cups-files.conf.default"
+	for u in $(SYSTEMD_UNITS); do \
+		rm -f "$(DESTDIR)$(UNITDIR)/$$u"; \
+	done
+	rm -f "$(DESTDIR)$(TMPFILESDIR)/presswork.conf" \
+		"$(DESTDIR)$(SYSUSERSDIR)/presswork.conf"
+	if [ -d man ]; then \
+		for f in man/*.[1-8] man/man[1-8]/*.[1-8]; do \
+			[ -f "$$f" ] || continue; \
+			sec=$${f##*.}; \
+			rm -f "$(DESTDIR)$(MANDIR)/man$$sec/$$(basename "$$f")"; \
+		done; \
+	fi
+	rm -rf "$(DESTDIR)$(DOCDIR)"
+
+check-fmt:
+	$(CARGO) fmt --all -- --check
+
+clippy:
+	$(CARGO) clippy --workspace --all-targets -- -D warnings
 
 test:
 	$(CARGO) test --workspace
 
-clippy:
-	$(CARGO) clippy --workspace --all-targets -- -D warnings
+conformance:
+	./scripts/conformance.sh
+
+coverage:
+	THRESHOLD=$(THRESHOLD) ./scripts/coverage-gate.sh --summary
+
+test-gate: check-fmt clippy test coverage

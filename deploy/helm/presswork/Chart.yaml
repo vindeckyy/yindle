@@ -1,0 +1,21 @@
+apiVersion: v2
+name: presswork
+description: Enterprise Helm chart for Presswork — a memory-safe, CUPS-compatible print spooler and IPP scheduler in Rust
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://vindeckyy.github.io/presswork/
+sources:
+  - https://github.com/vindeckyy/presswork
+keywords:
+  - presswork
+  - cups
+  - ipp
+  - printing
+  - print-spooler
+maintainers:
+  - name: vindeckyy
+    url: https://github.com/vindeckyy/presswork
+annotations:
+  artifacthub.io/license: Apache-2.0 OR MIT
+  artifacthub.io/category: networking

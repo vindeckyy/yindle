@@ -11,15 +11,41 @@ case "$1" in
             adduser --system --ingroup lp --home /var/spool/cups \
                 --no-create-home --gecos "Printing system" lp
         fi
-        # lpadmin group for @SYSTEM admin auth (Ubuntu/Debian convention).
+        # Create `lpadmin` group for @SYSTEM admin auth. Do NOT add `lp` to
+        # `lpadmin` so unprivileged filters/backends cannot gain admin rights.
         if ! getent group lpadmin >/dev/null; then
             addgroup --system lpadmin
         fi
-        adduser lp lpadmin 2>/dev/null || true
 
-        # Ownership of the mutable state tree.
-        chown -R lp:lp /var/spool/cups /var/log/cups /var/cache/cups /run/cups 2>/dev/null || true
-        chmod 0700 /etc/cups/ssl 2>/dev/null || true
+        # Ownership and permissions for configuration and mutable state trees.
+        chgrp lp /etc/cups 2>/dev/null || true
+        for cf in /etc/cups/cupsd.conf /etc/cups/cups-files.conf \
+                  /etc/cups/cupsd.conf.default /etc/cups/cups-files.conf.default; do
+            if [ -f "$cf" ]; then
+                chgrp lp "$cf" 2>/dev/null || true
+                chmod 0640 "$cf" 2>/dev/null || true
+            fi
+        done
+        if [ -d /etc/cups/ssl ]; then
+            chown root:root /etc/cups/ssl 2>/dev/null || true
+            chmod 0700 /etc/cups/ssl 2>/dev/null || true
+        fi
+
+        chown -R lp:lp /var/spool/cups /var/log/cups /var/cache/cups 2>/dev/null || true
+
+        if command -v systemd-tmpfiles >/dev/null 2>&1 && [ -f /usr/lib/tmpfiles.d/presswork.conf ]; then
+            systemd-tmpfiles --create presswork.conf 2>/dev/null || true
+        else
+            mkdir -p /run/cups /run/cups/certs
+            chown -R lp:lp /run/cups 2>/dev/null || true
+            chmod 0755 /run/cups /run/cups/certs 2>/dev/null || true
+        fi
+
+        # Reload and enable systemd socket/path activation before exit 0.
+        if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+            systemctl enable cups.socket cups.path 2>/dev/null || true
+        fi
         ;;
 esac
 

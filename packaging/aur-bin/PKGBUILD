@@ -1,28 +1,41 @@
-# Maintainer: vindeckyy <https://github.com/vindeckyy>
+# Maintainer: vindeckyy <35399491+vindeckyy@users.noreply.github.com>
 pkgname=presswork-bin
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Memory-safe CUPS 2.x-compatible print spooler and IPP scheduler in Rust (prebuilt release binaries)"
 arch=('x86_64')
 url="https://github.com/vindeckyy/presswork"
-license=('MIT' 'Apache-2.0')
-depends=('glibc' 'gcc-libs')
+license=('Apache-2.0 OR MIT')
+# Uses Arch's native libxcrypt (libcrypt.so.2 resolved dynamically via dlopen;
+# libxcrypt-compat is not required).
+depends=('glibc' 'gcc-libs' 'libxcrypt')
+optdepends=(
+    'cups-filters: PDF, PostScript, and raster conversion filters for legacy printers'
+    'cups-client: lp, lpstat, and lpadmin command-line client tools'
+)
 provides=('cups' 'presswork')
 conflicts=('cups' 'presswork')
-backup=('etc/cups/cupsd.conf' 'etc/cups/cups-files.conf' 'etc/cups/printers.conf')
-install=
+backup=(
+    'etc/cups/cupsd.conf'
+    'etc/cups/cups-files.conf'
+    'etc/cups/printers.conf'
+    'etc/pam.d/cups'
+    'etc/logrotate.d/presswork'
+)
 source=("https://github.com/vindeckyy/presswork/releases/download/v${pkgver}/presswork-${pkgver}-x86_64-unknown-linux-gnu.tar.gz"
         "presswork.sysusers"
         "presswork.tmpfiles")
+# Update the first entry from the GitHub release SHA256SUMS asset (or run `updpkgsums`)
+# whenever cutting a new release.
 sha256sums=('daa9fc8ecb9815b5909abad4be36b7faa177d35cd03d373aa8c54bc26bdad4fb'
-            'SKIP'
-            'SKIP')
+            '17edc91f51f826ace4ed8509d1bac55a7a06bdb481faf5ba21a70ddf6e4e5871'
+            '18f29580b2671d3fd86d4b0d5d6a5b8da445127bda35bfde77042574397e8022')
 
 package() {
     cd "presswork-${pkgver}"
 
-    # The release tarball is an FHS tree; package the persistent parts.
-    # Runtime dirs are created by the shipped tmpfiles config instead.
+    # The release tarball is an FHS tree; install persistent system paths.
+    # Runtime /run/cups and state dirs are managed by systemd-tmpfiles.
     cp -a usr etc "$pkgdir/"
 
     install -Dm644 "$srcdir/presswork.sysusers" \
@@ -30,6 +43,6 @@ package() {
     install -Dm644 "$srcdir/presswork.tmpfiles" \
         "$pkgdir/usr/lib/tmpfiles.d/presswork.conf"
     install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
-    install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/MIT"
-    install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/Apache-2.0"
+    [ -f LICENSE-MIT ] && install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/MIT"
+    [ -f LICENSE-APACHE ] && install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/Apache-2.0"
 }

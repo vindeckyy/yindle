@@ -1,30 +1,32 @@
 [Unit]
 Description=CUPS Scheduler
-Documentation=man:cupsd(8)
+Documentation=man:cupsd(8) https://github.com/vindeckyy/presswork
 After=network.target nss-lookup.target nslcd.service
 
 [Service]
 ExecStart=/usr/sbin/cupsd -l
+ExecReload=/bin/kill -HUP $MAINPID
 Type=simple
-Restart=always
+Restart=on-failure
+RestartSec=5s
 
 # ---- presswork sandbox hardening -------------------------------------------
-# cupsd is a long-lived root daemon that spawns filter/backend children and
-# owns the network-facing IPP surface — the highest-value process to sandbox
-# on most systems. These directives are chosen to be *compatible with a print
-# spooler* (it must spawn children, reach the network, own the spool/config
-# tree, and open device nodes for the usb/parallel backends). Tune in a
-# drop-in (`systemctl edit cups`) if your deployment needs more or less.
+# cupsd is a long-lived daemon that spawns filter/backend children and owns
+# the IPP surface. These directives are chosen to remain compatible with a
+# print spooler (spawning filters/backends, network IPP/LPD/JetDirect egress,
+# spool/config state, and /dev access for usb/parallel backends). Tune via a
+# drop-in (`systemctl edit cups`) if your deployment needs adjustments.
 
-# Writable paths: the daemon writes printers.conf under /etc/cups and owns the
-# spool/log/cache/run trees; everything else under /usr /boot /etc is read-only.
-ProtectSystem=full
-ReadWritePaths=/etc/cups /var/spool/cups /var/log/cups /var/cache/cups /run/cups
+# Create /run/cups automatically on tmpfs boot (prevents 226/NAMESPACE).
+RuntimeDirectory=cups
+RuntimeDirectoryMode=0755
 
-# Filters/backends read the spool and write to the device; they should not
-# need user home dirs. Print-to-file into $HOME uses the file backend against
-# the spool — flip to `false` here if your site relies on it.
-ProtectHome=read-only
+# Read-only filesystem except explicit mutable spool, cache, log, and config trees.
+ProtectSystem=strict
+ReadWritePaths=/var/spool/cups /var/cache/cups /var/log/cups /etc/cups
+
+# Filters/backends read the spool and write to devices; isolate user homes.
+ProtectHome=true
 
 PrivateTmp=true
 ProtectKernelTunables=true
@@ -33,19 +35,29 @@ ProtectKernelLogs=true
 ProtectControlGroups=true
 ProtectClock=true
 ProtectHostname=true
+RestrictNamespaces=true
 
-# No filter/backend ever needs to gain privileges; argv is built without a
-# shell, so setuid escalation isn't in the threat model anyway.
+# Minimum capabilities for binding port 631, checking shadow/PAM auth,
+# managing spool/config ownership, and dropping privileges to lp for children.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER
+
 NoNewPrivileges=true
 RestrictSUIDSGID=true
 LockPersonality=true
 RestrictRealtime=true
 
-# Device backends (usb/parallel) open /dev nodes — keep real device access.
+# Device backends (usb/parallel/serial) open /dev nodes — keep real device access.
 PrivateDevices=false
 
-# The IPP/DNS-SD surface is unix+inet(+6)+netlink; nothing else is needed.
+# Restrict syscalls and socket families to standard service operations.
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+# Prevent world-readable config/spool artifacts and bound resource usage.
+UMask=0027
+MemoryMax=512M
+TasksMax=256
 
 [Install]
 Also=cups.socket cups.path

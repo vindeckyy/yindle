@@ -1,15 +1,19 @@
 Source: presswork
 Section: net
 Priority: optional
-Maintainer: presswork contributors <presswork@example.invalid>
-Build-Depends: debhelper-compat (= 13), cargo, rustc, libavahi-client-dev
-Standards-Version: 4.6.2
+Maintainer: vindeckyy <35399491+vindeckyy@users.noreply.github.com>
+Homepage: https://github.com/vindeckyy/presswork
+Vcs-Git: https://github.com/vindeckyy/presswork.git
+Vcs-Browser: https://github.com/vindeckyy/presswork
+Build-Depends: debhelper-compat (= 13), cargo, rustc
+Standards-Version: 4.7.0
 Rules-Requires-Root: no
 
 Package: presswork
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, adduser
-Provides: cups
+Recommends: cups-client, cups-filters
+Provides: cups, cups-daemon
 Conflicts: cups, cups-daemon
 Replaces: cups-daemon
 Description: Memory-safe CUPS-compatible print spooler and IPP scheduler
@@ -21,4 +25,5 @@ Description: Memory-safe CUPS-compatible print spooler and IPP scheduler
  work unmodified.
  .
  This package provides the cupsd scheduler, helper daemons
- (cups-deviced, cups-driverd, cups-lpd), and the standard backends.
+ (cups-deviced, cups-driverd, cups-exec, cups-lpd), cupsfilter, and
+ the standard backends.
