@@ -362,6 +362,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn print_enforces_char_device_and_termios_via_ptmx() {
         let dir = std::env::temp_dir().join(format!("pw-ser-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -401,9 +402,13 @@ mod tests {
         };
         assert_eq!(print_job(&inv_null), bc::code::FAILED);
 
-        // Exercise real termios configuration + transfer_on_device on /dev/ptmx when available.
-        if Path::new("/dev/ptmx").exists() {
-            if let Ok(ptmx) = bc::open_char_device("/dev/ptmx", true, true, true) {
+        // Exercise real termios configuration + transfer_on_device on
+        // /dev/ptmx when available. The loop also runs the guards
+        // against a non-tty char device (/dev/null: open succeeds,
+        // tcgetattr fails) and a missing device (open fails), so the
+        // `if let` false arms are covered too.
+        for dev_path in ["/dev/ptmx", "/dev/null", "/dev/no-such-tty-xyz"] {
+            if let Ok(ptmx) = bc::open_char_device(dev_path, true, true, true) {
                 let fd = ptmx.as_raw_fd();
                 if let Some(saved) = sys::Termios::get(fd) {
                     let s = SerialSettings {
@@ -415,6 +420,24 @@ mod tests {
                     let mut tio = saved.clone();
                     configure_termios(&mut tio, &s);
                     let _ = apply_params(fd, &s);
+                    // Unsupported baud + non-DTR/DSR flow exercise the
+                    // false arms of `configure_termios` (unknown baud
+                    // leaves the rate alone, other flows skip the debug).
+                    let s_plain = SerialSettings {
+                        baud: Some(999_999),
+                        parity: None,
+                        bits: None,
+                        flow: FlowControl::None,
+                    };
+                    configure_termios(&mut tio, &s_plain);
+                    // No baud at all exercises the outer `if let` arm.
+                    let s_nobaud = SerialSettings {
+                        baud: None,
+                        parity: None,
+                        bits: None,
+                        flow: FlowControl::None,
+                    };
+                    configure_termios(&mut tio, &s_nobaud);
                     // Successful transfer + drain + restore.
                     let mut out_dev = Vec::new();
                     assert_eq!(
@@ -422,6 +445,14 @@ mod tests {
                         bc::code::OK
                     );
                     assert_eq!(out_dev, b"serial print");
+                    // `saved=None` restores nothing but still transfers
+                    // (and still drains) — covers the `None` arms.
+                    let mut out_plain = Vec::new();
+                    assert_eq!(
+                        transfer_on_device(&inv_reg, &mut out_plain, &s, None, fd),
+                        bc::code::OK
+                    );
+                    assert_eq!(out_plain, b"serial print");
                     // Missing document restores saved termios and returns FAILED.
                     let inv_nf = bc::Invocation {
                         file: Some(dir.join("missing").to_string_lossy().into_owned()),
@@ -431,15 +462,20 @@ mod tests {
                         transfer_on_device(&inv_nf, &mut out_dev, &s, Some(saved), fd),
                         bc::code::FAILED
                     );
+                    // Missing document with `saved=None` also fails.
+                    assert_eq!(
+                        transfer_on_device(&inv_nf, &mut out_plain, &s, None, fd),
+                        bc::code::FAILED
+                    );
                 }
             }
-            let inv_ptmx_nf = bc::Invocation {
-                device_uri: "serial:///dev/ptmx?baud=9600+flow=dtrdsr".into(),
-                file: Some(dir.join("missing").to_string_lossy().into_owned()),
-                ..inv_reg.clone()
-            };
-            assert_eq!(print_job(&inv_ptmx_nf), bc::code::FAILED);
         }
+        let inv_ptmx_nf = bc::Invocation {
+            device_uri: "serial:///dev/ptmx?baud=9600+flow=dtrdsr".into(),
+            file: Some(dir.join("missing").to_string_lossy().into_owned()),
+            ..inv_reg.clone()
+        };
+        assert_eq!(print_job(&inv_ptmx_nf), bc::code::FAILED);
 
         // Discovery reports openable serial ports and skips non-char files / missing dirs.
         let mut out_mock = Vec::new();

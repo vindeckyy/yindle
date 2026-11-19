@@ -358,12 +358,12 @@ pub async fn start_daemon_with_activated(
     };
     for (fname, is_classes) in [("printers.conf", false), ("classes.conf", true)] {
         let p = server_root.join(fname);
-        let res = if is_classes {
+        let load_result = if is_classes {
             reg.load_classes_file(&p)
         } else {
             reg.load_printers_file(&p)
         };
-        match res {
+        match load_result {
             Ok(errs) => {
                 for e in errs {
                     log.err(Level::Warn, format!("{fname}: {e}"));

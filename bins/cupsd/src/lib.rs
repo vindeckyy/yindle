@@ -33,7 +33,7 @@ use cli::{
 };
 
 /// Execute `cupsd` from an iterator of CLI arguments (excluding `argv[0]`).
-#[must_use]
+/// (No `#[must_use]` here: the returned `ExitCode` is already `#[must_use]`.)
 pub fn run_cli<I>(args: I) -> ExitCode
 where
     I: IntoIterator<Item = OsString>,

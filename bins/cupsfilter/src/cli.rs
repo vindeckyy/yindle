@@ -133,10 +133,10 @@ pub fn parse_job_spec(raw: &str) -> Result<(i32, u32), String> {
 
 /// Validate a `super/type` MIME type token.
 pub fn validate_mime_type(raw: &str) -> Result<String, String> {
-    let Some((sup, sub)) = raw.split_once('/') else {
+    let Some((main, sub)) = raw.split_once('/') else {
         return Err(format!("invalid MIME type '{raw}' (expected type/subtype)"));
     };
-    if sup.is_empty()
+    if main.is_empty()
         || sub.is_empty()
         || sub.contains('/')
         || raw
