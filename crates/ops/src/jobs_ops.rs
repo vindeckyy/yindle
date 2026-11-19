@@ -58,7 +58,48 @@ const SETTABLE_JOB_ATTRS: &[&str] = &[
 /// Supported `sides` keywords.
 const SUPPORTED_SIDES: &[&str] = &["one-sided", "two-sided-long-edge", "two-sided-short-edge"];
 
-/// Supported `job-hold-until` keywords.
+/// Banner names stock CUPS ships in its `banners/` data dir (`cupsdFindBanner`
+/// accepts these plus `none` even when no `Banners` dir is configured).
+const STOCK_BANNERS: &[&str] = &[
+    "classified",
+    "confidential",
+    "secret",
+    "standard",
+    "topsecret",
+    "unclassified",
+];
+
+/// Is `v` a usable `job-sheets` value: `none`, a configured banner, a stock
+/// CUPS banner — or, when a `Classification` is set, exactly that value
+/// (CUPS forces `job-sheets` to the classification).
+fn valid_job_sheet(ctx: &Ctx<'_>, v: &str) -> bool {
+    if !ctx.classification.is_empty() {
+        return v == ctx.classification;
+    }
+    v == "none" || STOCK_BANNERS.contains(&v) || ctx.banners.iter().any(|b| b == v)
+}
+
+/// Reject a `job-sheets` attribute whose values are not usable banners:
+/// RFC 8011 §5.2.3 allows 1–2 values, each from `job-sheets-supported`.
+/// A single value containing a comma (e.g. `"none,none"`) is one unknown
+/// banner name, not two — stock CUPS rejects it the same way.
+fn check_job_sheets(ctx: &Ctx<'_>, a: &Attribute) -> Result<(), (u16, String)> {
+    let vals: Vec<String> = a
+        .values
+        .iter()
+        .filter_map(|v| match v {
+            Value::Keyword(t) | Value::Name(t) | Value::Text(t) => Some(t.as_str().into_owned()),
+            _ => None,
+        })
+        .collect();
+    if vals.is_empty() || vals.len() > 2 || vals.iter().any(|v| !valid_job_sheet(ctx, v)) {
+        return Err((
+            status::ERROR_BAD_REQUEST,
+            format!("Bad job-sheets value \"{}\".", vals.join(",")),
+        ));
+    }
+    Ok(())
+}
 const SUPPORTED_HOLD_UNTIL: &[&str] = &[
     "no-hold",
     "indefinite",
@@ -300,6 +341,12 @@ fn validate_job_attrs(
                         ));
                     }
                 }
+                "job-sheets" => {
+                    if let Err((code, msg)) = check_job_sheets(ctx, a) {
+                        unsupported.push(a.clone());
+                        return Err((code, msg, unsupported));
+                    }
+                }
                 "job-hold-until" => {
                     let h = attr_text(a).unwrap_or_default();
                     if !SUPPORTED_HOLD_UNTIL.contains(&h.as_str()) {
@@ -320,6 +367,15 @@ fn validate_job_attrs(
                 }
                 _ => {}
             }
+        }
+    }
+
+    // Also validate `job-sheets` if passed in OPERATION group (ipptool
+    // puts job-template attributes there in test/4.3-job-ops.test).
+    if let Some(a) = req.find(tags::OPERATION, "job-sheets") {
+        if let Err((code, msg)) = check_job_sheets(ctx, a) {
+            unsupported.push(a.clone());
+            return Err((code, msg, unsupported));
         }
     }
 
@@ -508,9 +564,9 @@ fn resolve_and_authorize_dest(
         return None;
     };
     let printer = {
-        let reg = ctx.reg();
-        let Some((p, _)) = reg.validate_dest(&uri) else {
-            drop(reg);
+        let registry = ctx.reg();
+        let Some((p, _)) = registry.validate_dest(&uri) else {
+            drop(registry);
             let policy = ctx.effective_policy_for_dest(None);
             if !authorize_op(ctx, outcome, &policy, op_code, None, Some(&uri)) {
                 return None;
@@ -582,7 +638,7 @@ pub fn validate_job(
         Ok(u) => u,
         Err((code, msg, unsup)) => {
             for a in unsup {
-                outcome.response.push(tags::UNSUPPORTED, a);
+                outcome.response.push(tags::UNSUPPORTED_GROUP, a);
             }
             send_status(&mut outcome.response, code, msg);
             return;
@@ -604,7 +660,7 @@ pub fn validate_job(
         outcome.response.code = status::OK;
     } else {
         for a in ignored {
-            outcome.response.push(tags::UNSUPPORTED, a);
+            outcome.response.push(tags::UNSUPPORTED_GROUP, a);
         }
         outcome.response.code = status::OK_IGNORED_OR_SUBSTITUTED;
     }
@@ -656,14 +712,14 @@ pub fn get_jobs(
         }
         None
     } else {
-        let reg = ctx.reg();
+        let registry = ctx.reg();
         let resolved = if let Some(ref jdest) = only_job_dest {
-            reg.find(jdest)
+            registry.find(jdest)
         } else {
-            reg.validate_dest(&uri).map(|(p, _)| p)
+            registry.validate_dest(&uri).map(|(p, _)| p)
         };
         let Some(p) = resolved else {
-            drop(reg);
+            drop(registry);
             let policy = ctx.effective_policy_for_dest(None);
             if !authorize_op(ctx, outcome, &policy, op::GET_JOBS, None, Some(&uri)) {
                 return;
@@ -677,7 +733,7 @@ pub fn get_jobs(
         };
         let pname = p.name.clone();
         let policy = ctx.effective_policy_name(Some(p)).to_string();
-        drop(reg);
+        drop(registry);
         if !authorize_op(ctx, outcome, &policy, op::GET_JOBS, None, Some(&pname)) {
             return;
         }
@@ -739,8 +795,9 @@ pub fn get_jobs(
         Vec::new()
     } else {
         let target = p_name.as_deref().unwrap_or("");
-        let reg = ctx.reg();
-        reg.find(target)
+        let registry = ctx.reg();
+        registry
+            .find(target)
             .filter(|p| p.is_class())
             .map(|p| p.members.clone())
             .unwrap_or_default()
@@ -902,7 +959,7 @@ fn submit_document(
         Ok(u) => u,
         Err((code, msg, unsup)) => {
             for a in unsup {
-                outcome.response.push(tags::UNSUPPORTED, a);
+                outcome.response.push(tags::UNSUPPORTED_GROUP, a);
             }
             send_status(&mut outcome.response, code, msg);
             return;
@@ -1027,7 +1084,7 @@ fn submit_document(
         outcome.response.code = status::OK;
     } else {
         for a in ignored {
-            outcome.response.push(tags::UNSUPPORTED, a);
+            outcome.response.push(tags::UNSUPPORTED_GROUP, a);
         }
         outcome.response.code = status::OK_IGNORED_OR_SUBSTITUTED;
     }
@@ -1068,7 +1125,7 @@ pub fn create_job(
         Ok(u) => u,
         Err((code, msg, unsup)) => {
             for a in unsup {
-                outcome.response.push(tags::UNSUPPORTED, a);
+                outcome.response.push(tags::UNSUPPORTED_GROUP, a);
             }
             send_status(&mut outcome.response, code, msg);
             return;
@@ -1144,7 +1201,7 @@ pub fn create_job(
         status::OK
     } else {
         for a in ignored {
-            outcome.response.push(tags::UNSUPPORTED, a);
+            outcome.response.push(tags::UNSUPPORTED_GROUP, a);
         }
         status::OK_IGNORED_OR_SUBSTITUTED
     };
@@ -1445,9 +1502,9 @@ pub fn cancel_job(
             return;
         };
         let dest = {
-            let reg = ctx.reg();
-            let Some((p, _)) = reg.validate_dest(&uri) else {
-                drop(reg);
+            let registry = ctx.reg();
+            let Some((p, _)) = registry.validate_dest(&uri) else {
+                drop(registry);
                 let policy = ctx.effective_policy_for_dest(None);
                 if !authorize_op(ctx, outcome, &policy, op::CANCEL_JOB, None, Some(&uri)) {
                     return;
@@ -1583,9 +1640,9 @@ fn transition_current_job(
         return;
     };
     let dest = {
-        let reg = ctx.reg();
-        let Some((p, _)) = reg.validate_dest(&uri) else {
-            drop(reg);
+        let registry = ctx.reg();
+        let Some((p, _)) = registry.validate_dest(&uri) else {
+            drop(registry);
             let policy = ctx.effective_policy_for_dest(None);
             if !authorize_op(ctx, outcome, &policy, op_code, None, Some(&uri)) {
                 return;
@@ -1710,9 +1767,9 @@ pub fn cancel_my_jobs(
         if is_all_printers_uri(uri) {
             None
         } else {
-            let reg = ctx.reg();
-            let Some((p, _)) = reg.validate_dest(uri) else {
-                drop(reg);
+            let registry = ctx.reg();
+            let Some((p, _)) = registry.validate_dest(uri) else {
+                drop(registry);
                 let policy = ctx.effective_policy_for_dest(None);
                 if !authorize_op(
                     ctx,
@@ -1819,9 +1876,9 @@ pub fn cancel_jobs(
     let dest = if all {
         None
     } else {
-        let reg = ctx.reg();
-        let Some((p, _)) = reg.validate_dest(&uri) else {
-            drop(reg);
+        let registry = ctx.reg();
+        let Some((p, _)) = registry.validate_dest(&uri) else {
+            drop(registry);
             let policy = ctx.effective_policy_for_dest(None);
             if !authorize_op(ctx, outcome, &policy, op::CANCEL_JOBS, None, Some(&uri)) {
                 return;
@@ -1905,9 +1962,9 @@ pub fn purge_jobs(
         if is_all_printers_uri(&uri) {
             None
         } else {
-            let reg = ctx.reg();
-            let Some((p, _)) = reg.validate_dest(&uri) else {
-                drop(reg);
+            let registry = ctx.reg();
+            let Some((p, _)) = registry.validate_dest(&uri) else {
+                drop(registry);
                 let policy = ctx.effective_policy_for_dest(None);
                 if !authorize_op(ctx, outcome, &policy, op::PURGE_JOBS, None, Some(&uri)) {
                     return;
@@ -2357,7 +2414,7 @@ pub fn resubmit_or_reprocess_job(
     if req.code == op::RESUBMIT_JOB {
         if let Err((code, msg, unsup)) = validate_job_attrs(req, ctx) {
             for a in unsup {
-                outcome.response.push(tags::UNSUPPORTED, a);
+                outcome.response.push(tags::UNSUPPORTED_GROUP, a);
             }
             send_status(&mut outcome.response, code, msg);
             return;
@@ -2653,7 +2710,7 @@ pub fn set_job_attributes(
     }
     if !not_settable.is_empty() {
         for a in not_settable {
-            outcome.response.push(tags::UNSUPPORTED, a);
+            outcome.response.push(tags::UNSUPPORTED_GROUP, a);
         }
         send_status(
             &mut outcome.response,
@@ -2665,7 +2722,7 @@ pub fn set_job_attributes(
 
     if let Err((code, msg, unsup)) = validate_job_attrs(req, ctx) {
         for a in unsup {
-            outcome.response.push(tags::UNSUPPORTED, a);
+            outcome.response.push(tags::UNSUPPORTED_GROUP, a);
         }
         send_status(&mut outcome.response, code, msg);
         return;
@@ -2838,8 +2895,8 @@ fn resolve_move_target(
         return None;
     };
     let target_printer = {
-        let reg = ctx.reg();
-        let Some((p, _)) = reg.validate_dest(&target_uri) else {
+        let registry = ctx.reg();
+        let Some((p, _)) = registry.validate_dest(&target_uri) else {
             send_status(
                 &mut outcome.response,
                 status::ERROR_NOT_FOUND,
@@ -2947,9 +3004,9 @@ pub fn cups_move_job(
         return;
     };
     let src_dest = {
-        let reg = ctx.reg();
-        let Some((p, _)) = reg.validate_dest(&src_uri) else {
-            drop(reg);
+        let registry = ctx.reg();
+        let Some((p, _)) = registry.validate_dest(&src_uri) else {
+            drop(registry);
             let policy = ctx.effective_policy_for_dest(None);
             if !authorize_op(
                 ctx,
@@ -3301,7 +3358,7 @@ pub fn set_document_attributes(
     }
     if !not_settable.is_empty() {
         for a in not_settable {
-            outcome.response.push(tags::UNSUPPORTED, a);
+            outcome.response.push(tags::UNSUPPORTED_GROUP, a);
         }
         send_status(
             &mut outcome.response,

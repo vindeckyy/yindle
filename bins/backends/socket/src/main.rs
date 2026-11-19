@@ -200,6 +200,16 @@ mod tests {
         assert_eq!(t3.port, 9100);
         assert!(t3.wait_eof);
 
+        // Query-tail arms: unparseable bool leaves the default, a
+        // non-waiteof key is skipped, and a bare token without '=' is
+        // skipped (these close the `if let` arms in the query loop).
+        let t4 = parse_uri("socket://192.168.1.50/?waiteof=banana").unwrap();
+        assert!(t4.wait_eof);
+        let t5 = parse_uri("socket://192.168.1.50/?foo=bar&waiteof=false").unwrap();
+        assert!(!t5.wait_eof);
+        let t6 = parse_uri("socket://192.168.1.50/?waiteof").unwrap();
+        assert!(t6.wait_eof);
+
         for bad in [
             "ipp://host:9100",
             "socket://:9100",

@@ -1057,6 +1057,94 @@ fn subscriptions_error_paths_limits_and_sync_wait_timeout() {
 }
 
 #[test]
+fn max_subscriptions_counts_live_subs_only() {
+    // 4.4 regression: an expired (lapsed-lease) subscription must not
+    // consume a `MaxSubscriptions` slot. Stock cupsd prunes expired subs
+    // (`cupsdExpireSubscriptions`) before counting, so its raw count is
+    // the live count; counting lapsed leases let 4.4's expiring sub block
+    // its own suite's next creation with too-many-subscriptions.
+    let h = Harness::new("sub-live-count");
+    let mut ctx = h.user_ctx("alice");
+    ctx.max_subscriptions = 1;
+    let mk_sub = || {
+        with_sub_group(
+            with_printer_uri(
+                ipp_req(op::CREATE_PRINTER_SUBSCRIPTIONS),
+                "ipp://localhost:631/printers/laser1",
+            ),
+            vec![
+                Attribute::new(
+                    "notify-pull-method",
+                    tags::KEYWORD,
+                    vec![Value::Keyword("ippget".into())],
+                ),
+                Attribute::new(
+                    "notify-lease-duration",
+                    tags::INTEGER,
+                    vec![Value::Integer(1)],
+                ),
+            ],
+        )
+    };
+    assert_eq!(dispatch(&mk_sub(), &ctx).code, status::OK);
+    std::thread::sleep(Duration::from_secs(2));
+    // Lapsed sub frees the slot.
+    assert_eq!(dispatch(&mk_sub(), &ctx).code, status::OK);
+    // ...but the fresh live one now fills it.
+    assert_eq!(
+        dispatch(&mk_sub(), &ctx).code,
+        status::ERROR_TOO_MANY_SUBSCRIPTIONS
+    );
+}
+
+#[test]
+fn cancel_job_expires_its_job_subscriptions() {
+    // 4.4 regression: Cancel-Job must drop the job's subscriptions, like
+    // stock cupsd (`cupsdExpireSubscriptions(NULL, job)` on terminal
+    // transition). Before the fix a canceled job's subs leaked forever and
+    // kept consuming `MaxSubscriptions` slots, so 4.3's stuck job sub
+    // survived into 4.4.
+    let h = Harness::new("sub-cancel-expire");
+    let mut print_ctx = h.user_ctx("alice");
+    print_ctx.document = b"hello";
+    let pj = with_sub_group(
+        with_printer_uri(
+            ipp_req(op::PRINT_JOB),
+            "ipp://localhost:631/printers/laser1",
+        ),
+        vec![
+            Attribute::new(
+                "notify-events",
+                tags::KEYWORD,
+                vec![Value::Keyword("job-completed".into())],
+            ),
+            Attribute::new(
+                "notify-pull-method",
+                tags::KEYWORD,
+                vec![Value::Keyword("ippget".into())],
+            ),
+        ],
+    );
+    let pj_resp = dispatch(&pj, &print_ctx);
+    assert_eq!(pj_resp.code, status::OK);
+    let jid = find_attr_int(&pj_resp, tags::JOB, "job-id").unwrap();
+    let count_subs = |ctx: &ops::Ctx<'_>| {
+        dispatch(&ipp_req(op::GET_SUBSCRIPTIONS), ctx)
+            .groups
+            .iter()
+            .filter(|g| g.tag == tags::SUBSCRIPTION)
+            .count()
+    };
+    assert_eq!(count_subs(&print_ctx), 1);
+    let cancel = with_job_uri(
+        ipp_req(op::CANCEL_JOB),
+        &format!("ipp://localhost:631/jobs/{jid}"),
+    );
+    assert_eq!(dispatch(&cancel, &print_ctx).code, status::OK);
+    assert_eq!(count_subs(&print_ctx), 0);
+}
+
+#[test]
 fn admin_ops_all_attrs_classes_and_error_paths() {
     let h = Harness::new("admin-edges");
     let admin = h.admin_ctx();
@@ -3386,4 +3474,64 @@ fn review_finding5_collisions_quotas_hold_job_uri_subs_policies_and_states() {
         h.jobs.read().unwrap().get(held_by_queue).unwrap().dest,
         "secure_q"
     );
+}
+
+#[test]
+fn print_job_rejects_bad_job_sheets_with_bad_request() {
+    // Regression test for test/4.3-job-ops "Print PostScript Job with bad
+    // job-sheets value to Test1": a single `job-sheets` value containing a
+    // comma ("none,none") is one unknown banner name, not two values, and
+    // must fail with client-error-bad-request — and the response must
+    // still encode (the daemon once answered 0 bytes here).
+    let h = Harness::new("bad-job-sheets");
+    let mut ctx = h.user_ctx("alice");
+    ctx.document = b"%!PS-Adobe-3.0\n";
+
+    for (group, tag) in [("operation", tags::NAME), ("job", tags::NAME)] {
+        let base = with_printer_uri(
+            ipp_req(op::PRINT_JOB),
+            "ipp://localhost:631/printers/laser1",
+        );
+        let req = if group == "operation" {
+            with_op_attr(base, "job-sheets", tag, Value::Name("none,none".into()))
+        } else {
+            with_job_attr(base, "job-sheets", tag, Value::Name("none,none".into()))
+        };
+        let resp = dispatch(&req, &ctx);
+        assert_eq!(resp.code, status::ERROR_BAD_REQUEST, "in {group} group");
+        assert!(
+            ipp_codec::encode(&resp).is_ok(),
+            "error response must encode (in {group} group)"
+        );
+        // The rejected attribute must land in the unsupported-attributes
+        // GROUP (tag 0x05), not a bogus 0x10 group: 0x10 is the out-of-band
+        // "unsupported" VALUE tag, and strict IPP parsers (libcups) fail
+        // the whole response when it appears as a group tag.
+        assert!(
+            resp.group(tags::UNSUPPORTED_GROUP).is_some(),
+            "unsupported-attributes group missing (in {group} group)"
+        );
+        assert!(
+            resp.groups.iter().all(|g| g.tag != tags::UNSUPPORTED),
+            "0x10 must never appear as a group tag (in {group} group)"
+        );
+    }
+
+    // Valid banners are accepted (stock CUPS names, not just "none").
+    for good in ["none", "standard", "unclassified"] {
+        let req = with_op_attr(
+            with_printer_uri(
+                ipp_req(op::PRINT_JOB),
+                "ipp://localhost:631/printers/laser1",
+            ),
+            "job-sheets",
+            tags::NAME,
+            Value::Name(good.into()),
+        );
+        assert_eq!(
+            dispatch(&req, &ctx).code,
+            status::OK,
+            "job-sheets {good} must be accepted"
+        );
+    }
 }

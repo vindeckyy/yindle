@@ -1491,6 +1491,45 @@ mod tests {
     }
 
     #[test]
+    fn resolve_and_directive_edge_cases() {
+        let base = std::env::temp_dir().join(format!("pw-driverd-edge-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        // Empty / NUL / backslash / absolute paths are rejected outright.
+        assert!(safe_resolve_under(&base, "").is_none());
+        assert!(safe_resolve_under(&base, "a\0b").is_none());
+        assert!(safe_resolve_under(&base, "..\\evil").is_none());
+        assert!(safe_resolve_under(&base, "/etc/passwd").is_none());
+        // Quoted vs bare first argument.
+        assert_eq!(arg1("\"Model Name\" trailing"), "Model Name");
+        assert_eq!(arg1("bare"), "bare");
+        // Angle, quoted, and bare `#include` targets.
+        assert_eq!(
+            parse_include_directive("#include <defs.inc>"),
+            Some("defs.inc")
+        );
+        assert_eq!(
+            parse_include_directive("#include \"defs.inc\""),
+            Some("defs.inc")
+        );
+        assert_eq!(parse_include_directive("#include bare.h"), None);
+        assert_eq!(parse_include_directive("Manufacturer \"X\""), None);
+        // Include expansion: depth exceeded and unresolvable path bail out.
+        let mut active = HashSet::new();
+        let mut out: Vec<String> = Vec::new();
+        load_drv_expanded(
+            &base.join("x.drv"),
+            &base,
+            MAX_INCLUDE_DEPTH + 1,
+            &mut active,
+            &mut out,
+        );
+        assert_eq!(out.len(), 0);
+        load_drv_expanded(&base.join("missing.drv"), &base, 0, &mut active, &mut out);
+        assert_eq!(out.len(), 0);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn gunzip_handles_stored_fixed_dynamic_and_rejects_corrupt() {
         let sample =
             b"*PPD-Adobe: \"4.3\"\n*Manufacturer: \"Acme\"\n*NickName: \"Acme Laser 5000\"\n";
@@ -1852,6 +1891,21 @@ mod tests {
         // Empty device-id rejected when ppd-device-id filter is requested.
         let f_dev = parse_list_filters("ppd-device-id=MFG:HP;");
         assert!(!matches_filters(&p_empty, &f_dev));
+
+        // Space-containing values continue onto the active filter, stray
+        // bare tokens and unknown keys are skipped, and a second key
+        // flushes the previous multi-word value.
+        let f_multi =
+            parse_list_filters("hello bogus-key=x ppd-make=Hewlett Packard ppd-product=LaserJet");
+        assert_eq!(
+            f_multi.get("ppd-make").map(String::as_str),
+            Some("Hewlett Packard")
+        );
+        assert_eq!(
+            f_multi.get("ppd-product").map(String::as_str),
+            Some("LaserJet")
+        );
+        assert!(!f_multi.contains_key("bogus-key"));
 
         // Multi-model .drv with #include cycle guard and per-model HWMargins/DeviceID.
         let base = std::env::temp_dir().join(format!("pw-driverd-cyc-{}", std::process::id()));

@@ -380,8 +380,8 @@ pub fn add_modify_printer(
         return;
     }
 
-    let mut reg = ctx.reg_write();
-    if let Some(existing) = reg.printers.get(&name) {
+    let mut registry = ctx.reg_write();
+    if let Some(existing) = registry.printers.get(&name) {
         if existing.is_class() {
             send_status(
                 &mut outcome.response,
@@ -391,8 +391,8 @@ pub fn add_modify_printer(
             return;
         }
     }
-    let exists = reg.printers.contains_key(&name);
-    let mut p = if let Some(existing) = reg.printers.get(&name) {
+    let exists = registry.printers.contains_key(&name);
+    let mut p = if let Some(existing) = registry.printers.get(&name) {
         existing.clone()
     } else {
         let initial_uri = explicit_device_uri.clone().unwrap_or_default();
@@ -417,8 +417,8 @@ pub fn add_modify_printer(
     }
 
     let shared = p.shared;
-    reg.add(p.clone());
-    drop(reg);
+    registry.add(p.clone());
+    drop(registry);
 
     ctx.save_printers();
     ctx.event(
@@ -541,8 +541,8 @@ pub fn create_local_printer(req: &IppMessage, outcome: &mut DispatchOutcome, ctx
 
     let saved_p = p.clone();
     {
-        let mut reg = ctx.reg_write();
-        if reg.printers.contains_key(&name) {
+        let mut registry = ctx.reg_write();
+        if registry.printers.contains_key(&name) {
             send_status(
                 &mut outcome.response,
                 status::ERROR_NOT_POSSIBLE,
@@ -550,7 +550,7 @@ pub fn create_local_printer(req: &IppMessage, outcome: &mut DispatchOutcome, ctx
             );
             return;
         }
-        reg.add(p);
+        registry.add(p);
     }
     ctx.save_printers();
     ctx.event(
@@ -606,8 +606,8 @@ pub fn delete_printer(
     else {
         return;
     };
-    let mut reg = ctx.reg_write();
-    if reg.printers.get(&name).is_none_or(Printer::is_class) {
+    let mut registry = ctx.reg_write();
+    if registry.printers.get(&name).is_none_or(Printer::is_class) {
         send_status(
             &mut outcome.response,
             status::ERROR_NOT_FOUND,
@@ -615,8 +615,8 @@ pub fn delete_printer(
         );
         return;
     }
-    reg.remove(&name);
-    drop(reg);
+    registry.remove(&name);
+    drop(registry);
 
     let _ = std::fs::remove_file(ctx.server_root.join("ppd").join(format!("{name}.ppd")));
     ctx.save_all_destinations();
@@ -653,8 +653,8 @@ pub fn add_modify_class(
         .and_then(|g| g.find("member-uris"))
         .or_else(|| req.find(tags::OPERATION, "member-uris"));
 
-    let mut reg = ctx.reg_write();
-    if let Some(existing) = reg.printers.get(&name) {
+    let mut registry = ctx.reg_write();
+    if let Some(existing) = registry.printers.get(&name) {
         if !existing.is_class() {
             send_status(
                 &mut outcome.response,
@@ -665,8 +665,8 @@ pub fn add_modify_class(
         }
     }
 
-    let exists = reg.printers.contains_key(&name);
-    let mut class = if let Some(existing) = reg.printers.get(&name) {
+    let exists = registry.printers.contains_key(&name);
+    let mut class = if let Some(existing) = registry.printers.get(&name) {
         existing.clone()
     } else {
         let mut c = Printer::new_class(name.clone());
@@ -699,7 +699,7 @@ pub fn add_modify_class(
                 );
                 return;
             }
-            if !reg.printers.contains_key(&m_name) {
+            if !registry.printers.contains_key(&m_name) {
                 send_status(
                     &mut outcome.response,
                     status::ERROR_NOT_FOUND,
@@ -720,8 +720,8 @@ pub fn add_modify_class(
     }
 
     let shared = class.shared;
-    reg.add(class.clone());
-    drop(reg);
+    registry.add(class.clone());
+    drop(registry);
 
     ctx.save_classes();
     ctx.event(
@@ -762,8 +762,8 @@ pub fn delete_class(
     else {
         return;
     };
-    let mut reg = ctx.reg_write();
-    if !reg.printers.get(&name).is_some_and(Printer::is_class) {
+    let mut registry = ctx.reg_write();
+    if !registry.printers.get(&name).is_some_and(Printer::is_class) {
         send_status(
             &mut outcome.response,
             status::ERROR_NOT_FOUND,
@@ -771,8 +771,8 @@ pub fn delete_class(
         );
         return;
     }
-    reg.remove(&name);
-    drop(reg);
+    registry.remove(&name);
+    drop(registry);
 
     ctx.save_all_destinations();
     ctx.dnssd_unpublish(&name);
@@ -796,8 +796,8 @@ pub fn set_default(
     let Some(name) = prepare_admin_dest(outcome, ctx, uri_attr, None, op::CUPS_SET_DEFAULT) else {
         return;
     };
-    let mut reg = ctx.reg_write();
-    if !reg.printers.contains_key(&name) {
+    let mut registry = ctx.reg_write();
+    if !registry.printers.contains_key(&name) {
         send_status(
             &mut outcome.response,
             status::ERROR_NOT_FOUND,
@@ -805,8 +805,8 @@ pub fn set_default(
         );
         return;
     }
-    reg.default = Some(name.clone());
-    drop(reg);
+    registry.default = Some(name.clone());
+    drop(registry);
 
     ctx.save_all_destinations();
     ctx.audit("CUPS-Set-Default", Some(&name), "allowed", "set default");
@@ -826,8 +826,8 @@ pub fn set_printer_state(
     let Some(name) = prepare_admin_dest(outcome, ctx, uri_attr, None, req.code) else {
         return;
     };
-    let mut reg = ctx.reg_write();
-    let Some(p) = reg.printers.get_mut(&name) else {
+    let mut registry = ctx.reg_write();
+    let Some(p) = registry.printers.get_mut(&name) else {
         send_status(
             &mut outcome.response,
             status::ERROR_NOT_FOUND,
@@ -851,7 +851,7 @@ pub fn set_printer_state(
     let is_class = p.is_class();
     let shared = p.shared;
     let saved_p = p.clone();
-    drop(reg);
+    drop(registry);
 
     if is_class {
         ctx.save_classes();
@@ -892,8 +892,8 @@ pub fn set_accepting(
     let Some(name) = prepare_admin_dest(outcome, ctx, uri_attr, None, req.code) else {
         return;
     };
-    let mut reg = ctx.reg_write();
-    let Some(p) = reg.printers.get_mut(&name) else {
+    let mut registry = ctx.reg_write();
+    let Some(p) = registry.printers.get_mut(&name) else {
         send_status(
             &mut outcome.response,
             status::ERROR_NOT_FOUND,
@@ -923,7 +923,7 @@ pub fn set_accepting(
         }
     }
     let is_class = p.is_class();
-    drop(reg);
+    drop(registry);
 
     if is_class {
         ctx.save_classes();
@@ -956,8 +956,8 @@ pub fn hold_new_jobs(
     let Some(name) = prepare_admin_dest(outcome, ctx, uri_attr, None, op::HOLD_NEW_JOBS) else {
         return;
     };
-    let mut reg = ctx.reg_write();
-    let Some(p) = reg.printers.get_mut(&name) else {
+    let mut registry = ctx.reg_write();
+    let Some(p) = registry.printers.get_mut(&name) else {
         send_status(
             &mut outcome.response,
             status::ERROR_NOT_FOUND,
@@ -973,7 +973,7 @@ pub fn hold_new_jobs(
     }
     p.state_time = printer::now();
     let is_class = p.is_class();
-    drop(reg);
+    drop(registry);
 
     if is_class {
         ctx.save_classes();
@@ -1002,8 +1002,8 @@ pub fn release_held_new_jobs(
     else {
         return;
     };
-    let mut reg = ctx.reg_write();
-    let Some(p) = reg.printers.get_mut(&name) else {
+    let mut registry = ctx.reg_write();
+    let Some(p) = registry.printers.get_mut(&name) else {
         send_status(
             &mut outcome.response,
             status::ERROR_NOT_FOUND,
@@ -1015,7 +1015,7 @@ pub fn release_held_new_jobs(
     p.reasons.retain(|r| r != "hold-new-jobs");
     p.state_time = printer::now();
     let is_class = p.is_class();
-    drop(reg);
+    drop(registry);
 
     // Release ONLY jobs held due to `hold-new-jobs` (never jobs explicitly held
     // by users via `Hold-Job` or `job-hold-until`).
@@ -1094,8 +1094,8 @@ pub fn set_printer_attributes(
         }
     }
 
-    let mut reg = ctx.reg_write();
-    let Some(p) = reg.printers.get_mut(&name) else {
+    let mut registry = ctx.reg_write();
+    let Some(p) = registry.printers.get_mut(&name) else {
         send_status(
             &mut outcome.response,
             status::ERROR_NOT_FOUND,
@@ -1113,7 +1113,7 @@ pub fn set_printer_attributes(
     let is_class = p.is_class();
     let shared = p.shared;
     let saved_p = p.clone();
-    drop(reg);
+    drop(registry);
 
     if is_class {
         ctx.save_classes();
@@ -1394,8 +1394,8 @@ fn resolve_get_ppd(
             req.find(tags::OPERATION, "printer-uri")
                 .and_then(attr_text)
                 .and_then(|u| {
-                    let reg = ctx.reg();
-                    reg.validate_dest(&u).map(|(p, _)| {
+                    let registry = ctx.reg();
+                    registry.validate_dest(&u).map(|(p, _)| {
                         target_printer = Some(p.name.clone());
                         if ctx
                             .server_root

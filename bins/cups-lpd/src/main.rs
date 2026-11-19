@@ -295,15 +295,15 @@ fn ipp_call(
     if let Some(spool) = data {
         spool.file.seek(SeekFrom::Start(0)).ok()?;
         let mut buf = [0u8; STREAM_BUF_SIZE];
-        let mut rem = spool.len;
-        while rem > 0 {
-            let want = usize::try_from(rem.min(buf.len() as u64)).unwrap_or(buf.len());
+        let mut remaining = spool.len;
+        while remaining > 0 {
+            let want = usize::try_from(remaining.min(buf.len() as u64)).unwrap_or(buf.len());
             let n = spool.file.read(&mut buf[..want]).ok()?;
             if n == 0 {
                 return None;
             }
             s.write_all(&buf[..n]).ok()?;
-            rem -= n as u64;
+            remaining -= n as u64;
         }
     }
     s.flush().ok()?;
@@ -1024,7 +1024,7 @@ mod tests {
         let cfg_small = test_cfg(631, 1024);
         let wire_oom = b"\x02lp\n\x03999999999999 dfA001h\n";
         let mut out = Vec::new();
-        session(&cfg_small, &mut Cursor::new(wire_oom.to_vec()), &mut out);
+        let _ = session(&cfg_small, &mut Cursor::new(wire_oom.to_vec()), &mut out);
         assert_eq!(out, vec![0, 1]); // queue ACK, then immediate NACK!
 
         // Test 2: Data-before-control AND control-before-data both deliver control metadata + data!
@@ -1090,7 +1090,7 @@ mod tests {
 
             let mut out = Vec::new();
             let cfg = test_cfg(port, 1024 * 1024);
-            session(&cfg, &mut Cursor::new(wire), &mut out);
+            let _ = session(&cfg, &mut Cursor::new(wire), &mut out);
             assert_eq!(out, vec![0, 0, 0, 0, 0]);
             srv.join().unwrap();
         }
@@ -1190,7 +1190,7 @@ mod tests {
 
         // Short queue state (0x03)
         let mut out_short = Vec::new();
-        session(
+        let _ = session(
             &cfg,
             &mut Cursor::new(b"\x03office\n".to_vec()),
             &mut out_short,
@@ -1205,7 +1205,7 @@ mod tests {
 
         // Long queue state (0x04) filtered to alice
         let mut out_long = Vec::new();
-        session(
+        let _ = session(
             &cfg,
             &mut Cursor::new(b"\x04office alice\n".to_vec()),
             &mut out_long,
@@ -1216,7 +1216,7 @@ mod tests {
 
         // Remove job (0x05)
         let mut out_rm = Vec::new();
-        session(
+        let _ = session(
             &cfg,
             &mut Cursor::new(b"\x05office alice 11\n".to_vec()),
             &mut out_rm,
@@ -1239,16 +1239,16 @@ mod tests {
 
         // 0x01 print waiting
         let mut out = Vec::new();
-        session(&cfg, &mut Cursor::new(b"\x01lp\n".to_vec()), &mut out);
+        let _ = session(&cfg, &mut Cursor::new(b"\x01lp\n".to_vec()), &mut out);
         assert_eq!(out, vec![0]);
 
         // 0x02 invalid queue & abort subcommand
         let mut out2 = Vec::new();
-        session(&cfg, &mut Cursor::new(b"\x02../bad\n".to_vec()), &mut out2);
+        let _ = session(&cfg, &mut Cursor::new(b"\x02../bad\n".to_vec()), &mut out2);
         assert_eq!(out2, vec![1]);
 
         let mut out_abort = Vec::new();
-        session(
+        let _ = session(
             &cfg,
             &mut Cursor::new(b"\x02lp\n\x01".to_vec()),
             &mut out_abort,
@@ -1257,18 +1257,18 @@ mod tests {
 
         // 0x03 invalid queue & unavailable daemon
         let mut out_q = Vec::new();
-        session(&cfg, &mut Cursor::new(b"\x03../bad\n".to_vec()), &mut out_q);
+        let _ = session(&cfg, &mut Cursor::new(b"\x03../bad\n".to_vec()), &mut out_q);
         assert!(String::from_utf8(out_q).unwrap().contains("invalid queue"));
 
         let mut out_down = Vec::new();
-        session(&cfg, &mut Cursor::new(b"\x03lp\n".to_vec()), &mut out_down);
+        let _ = session(&cfg, &mut Cursor::new(b"\x03lp\n".to_vec()), &mut out_down);
         assert!(String::from_utf8(out_down)
             .unwrap()
             .contains("daemon unavailable"));
 
         // 0x05 invalid queue & unknown cmd & empty input
         let mut out_rm_bad = Vec::new();
-        session(
+        let _ = session(
             &cfg,
             &mut Cursor::new(b"\x05../bad alice\n".to_vec()),
             &mut out_rm_bad,
@@ -1276,7 +1276,7 @@ mod tests {
         assert_eq!(out_rm_bad, vec![1]);
 
         let mut out_unk = Vec::new();
-        session(&cfg, &mut Cursor::new(b"\x99".to_vec()), &mut out_unk);
+        let _ = session(&cfg, &mut Cursor::new(b"\x99".to_vec()), &mut out_unk);
         assert_eq!(out_unk, vec![1]);
 
         let mut out_eof = Vec::new();
@@ -1357,14 +1357,14 @@ mod tests {
             &b"\x05\n"[..],
         ] {
             let mut out = Vec::new();
-            session(&cfg, &mut Cursor::new(wire.to_vec()), &mut out);
+            let _ = session(&cfg, &mut Cursor::new(wire.to_vec()), &mut out);
             assert_eq!(out.last().copied(), Some(1), "expected NACK for {wire:?}");
         }
         let mut out_qs_eof = Vec::new();
-        session(&cfg, &mut Cursor::new(b"\x03".to_vec()), &mut out_qs_eof);
+        let _ = session(&cfg, &mut Cursor::new(b"\x03".to_vec()), &mut out_qs_eof);
         assert_eq!(out_qs_eof, [] as [u8; 0]);
         let mut out_qs_empty = Vec::new();
-        session(
+        let _ = session(
             &cfg,
             &mut Cursor::new(b"\x03\n".to_vec()),
             &mut out_qs_empty,
@@ -1454,7 +1454,7 @@ mod tests {
 
         let cfg_live = test_cfg(port, 1024 * 1024);
         let mut out_solo = Vec::new();
-        session(
+        let _ = session(
             &cfg_live,
             &mut Cursor::new(b"\x02lp\n\x034 dfA001h\nsolo\0".to_vec()),
             &mut out_solo,
@@ -1462,7 +1462,7 @@ mod tests {
         assert_eq!(out_solo, vec![0, 0, 0]);
 
         let mut out_empty = Vec::new();
-        session(
+        let _ = session(
             &cfg_live,
             &mut Cursor::new(b"\x03lp\n".to_vec()),
             &mut out_empty,
@@ -1471,7 +1471,7 @@ mod tests {
 
         // remove_jobs without explicit ID finds job 77 -> Cancel-Job returns NOT_AUTHORIZED -> NACK(1).
         let mut out_rm_deny = Vec::new();
-        session(
+        let _ = session(
             &cfg_live,
             &mut Cursor::new(b"\x05lp alice\n".to_vec()),
             &mut out_rm_deny,
@@ -1480,7 +1480,7 @@ mod tests {
 
         // remove_jobs on empty queue with -all -> ACK(0).
         let mut out_rm_none = Vec::new();
-        session(
+        let _ = session(
             &cfg_live,
             &mut Cursor::new(b"\x05lp alice -all\n".to_vec()),
             &mut out_rm_none,
@@ -1489,7 +1489,7 @@ mod tests {
 
         // remove_jobs when daemon unreachable -> NACK(1).
         let mut out_rm_down = Vec::new();
-        session(
+        let _ = session(
             &cfg,
             &mut Cursor::new(b"\x05lp alice\n".to_vec()),
             &mut out_rm_down,

@@ -174,7 +174,13 @@ pub fn parse_variable_files<D: Diag>(
         return Ok(false);
     };
     // PATHNAME: cupsd validates existence at parse time (`access(temp,0)`),
-    // except for "internal" and ServerKeychain.
+    // except for "internal" and ServerKeychain. A missing path is only a
+    // warning here, not an error: the config may be validated on a host
+    // where the install does not exist yet (fresh checkout, container, CI),
+    // and the shipped defaults name FHS paths that only exist after
+    // `make install`. The daemon still fails at runtime if a path it
+    // actually needs is absent. (Same host-independence reason as
+    // unresolvable SystemGroup names.)
     if ty == VarType::Pathname {
         if let Some(v) = value {
             let joined = join_server_root(server_root, v.to_string());
@@ -182,13 +188,12 @@ pub fn parse_variable_files<D: Diag>(
                 v.eq_ignore_ascii_case("internal") || name.eq_ignore_ascii_case("ServerKeychain");
             if !skip && !std::path::Path::new(&joined).exists() {
                 diags.log(
-                    Severity::Error,
+                    Severity::Warn,
                     linenum,
                     format!(
-                        "File or directory for \"{name} {v}\" on line {linenum} of {filename} does not exist."
+                        "File or directory for \"{name} {v}\" on line {linenum} of {filename} does not exist (yet); keeping the configured path."
                     ),
                 );
-                return Err(());
             }
         }
     }

@@ -452,4 +452,27 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn forward_returns_failed_when_no_ipp_backend_exists() {
+        // `forward()` resolves the ipp backend from the test binary's
+        // siblings, then $CUPS_SERVERBIN, then the stock path; none of
+        // them exists here, so the exec fails and it returns FAILED
+        // instead of replacing the process. Guard the preconditions so
+        // an environment with a real ipp backend fails loudly here
+        // instead of exec'ing the test runner away.
+        let dir = std::env::temp_dir().join(format!("pw-dnssd-fwd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        assert!(!exe.parent().unwrap().join("ipp").is_file());
+        assert!(!Path::new("/usr/lib/cups/backend/ipp").is_file());
+        std::env::set_var("CUPS_SERVERBIN", &dir);
+        let rc = forward(
+            &["dnssd".to_string(), "arg".to_string()],
+            "ipp://10.0.0.1/ipp/print",
+        );
+        std::env::remove_var("CUPS_SERVERBIN");
+        assert_eq!(rc, bc::code::FAILED);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

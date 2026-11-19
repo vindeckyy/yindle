@@ -609,6 +609,16 @@ pub fn read_cups_files_conf<R: BufRead>(
             });
         }};
     }
+    macro_rules! warn {
+        ($line:expr, $($f:tt)*) => {{
+            diags.entries.push(Diagnostic {
+                severity: Severity::Warn,
+                file: sink_file.clone(),
+                line: $line,
+                message: format!($($f)*),
+            });
+        }};
+    }
     macro_rules! fatal_if {
         ($mask:expr) => {
             if fatal.has($mask) {
@@ -818,14 +828,25 @@ pub fn read_cups_files_conf<R: BufRead>(
                     cfg.system_groups.push(gid);
                     cfg.system_group_names.push(gname);
                 } else {
-                    err!(
+                    // Warn and keep the name: the group may exist on the
+                    // deployment host but not on the host validating this
+                    // config (fresh install, container, CI), and runtime
+                    // `@SYSTEM` checks match by group *name* against live
+                    // membership, so the name is still the correct datum.
+                    // Failing here made the shipped default config
+                    // (`SystemGroup lpadmin`) unvalidatable anywhere the
+                    // group does not exist yet, and the dropped name then
+                    // misreported as EMPTY_SYSTEM_GROUP in the audit.
+                    // An unresolvable name still matches nobody, so this
+                    // stays fail-closed.
+                    warn!(
                         ln,
-                        "Unknown SystemGroup \"{}\" on line {} of {}.",
+                        "Unknown SystemGroup \"{}\" on line {} of {}; keeping the name for @SYSTEM checks.",
                         gname,
                         ln,
                         filename
                     );
-                    fatal_if!(FatalErrors::CONFIG);
+                    cfg.system_group_names.push(gname);
                 }
             }
         } else if name.eq_ignore_ascii_case("User") && value.is_some() {

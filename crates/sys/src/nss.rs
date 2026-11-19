@@ -570,3 +570,21 @@ pub fn check_password(user: &str, pass: &str) -> bool {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shadow_lookup_retries_on_tiny_buffer() {
+        // A 4-byte scratch buffer forces `ERANGE` retries before the entry fits.
+        // Root reads /etc/shadow; unprivileged callers get a clean `None`.
+        let entry = lookup_shadow_with_buf(c"root", 4);
+        // SAFETY: `geteuid` always succeeds.
+        if unsafe { libc::geteuid() } == 0 {
+            assert!(entry.is_some());
+        } else {
+            assert!(entry.is_none());
+        }
+    }
+}
