@@ -455,7 +455,7 @@ mod tests {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let p = std::env::temp_dir().join(format!(
-            "presswork-cupsd-cgi-{}-{tag}-{id}",
+            "yindle-cupsd-cgi-{}-{tag}-{id}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&p);

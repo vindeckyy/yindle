@@ -7,10 +7,10 @@ assignees: ''
 ---
 
 > **Security bugs:** Do **not** report security vulnerabilities in public issues.
-> Use [GitHub Private Vulnerability Reporting](https://github.com/vindeckyy/presswork/security/advisories/new)
-> (see [SECURITY.md](https://github.com/vindeckyy/presswork/blob/main/SECURITY.md)).
+> Use [GitHub Private Vulnerability Reporting](https://github.com/vindeckyy/yindle/security/advisories/new)
+> (see [SECURITY.md](https://github.com/vindeckyy/yindle/blob/main/SECURITY.md)).
 
-**presswork version / commit**
+**yindle version / commit**
 <!-- output of `cupsd --version` (or `cupsd -v`), or the release tag / commit SHA -->
 
 **Environment**

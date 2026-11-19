@@ -1,8 +1,8 @@
-# nixpkgs derivation for presswork.
+# nixpkgs derivation for yindle.
 #
-# Release maintenance (pkgs/by-name/pr/presswork/package.nix):
+# Release maintenance (pkgs/by-name/yi/yindle/package.nix):
 #   1. Replace `src.hash` with the SRI hash for tag `v${version}`:
-#        nix-prefetch-github vindeckyy presswork --rev v0.1.0
+#        nix-prefetch-github vindeckyy yindle --rev v0.1.1
 #   2. Replace `cargoHash` with the SRI hash printed by the first Nix build
 #      after updating `src.hash`.
 #   3. Keep `meta.homepage` and `meta.changelog` pointing at the upstream repo.
@@ -13,14 +13,14 @@
 }:
 
 rustPlatform.buildRustPackage rec {
-  pname = "presswork";
-  version = "0.1.0";
+  pname = "yindle";
+  version = "0.1.1";
 
   src = fetchFromGitHub {
     owner = "vindeckyy";
-    repo = "presswork";
+    repo = "yindle";
     rev = "v${version}";
-    # Placeholder: update from `nix-prefetch-github vindeckyy presswork --rev v0.1.0` on release.
+    # Placeholder: update from `nix-prefetch-github vindeckyy yindle --rev v0.1.1` on release.
     hash = lib.fakeHash;
   };
 
@@ -52,7 +52,7 @@ rustPlatform.buildRustPackage rec {
       "$out/share/cups/data" \
       "$out/share/cups/templates" \
       "$out/share/cups/doc-root" \
-      "$out/share/doc/presswork" \
+      "$out/share/doc/yindle" \
       "$out/etc/cups" \
       "$out/etc/pam.d" \
       "$out/etc/logrotate.d" \
@@ -74,7 +74,7 @@ rustPlatform.buildRustPackage rec {
     install -m 0640 data/cupsd.conf.default "$out/etc/cups/cupsd.conf.default"
     install -m 0640 data/cups-files.conf.default "$out/etc/cups/cups-files.conf.default"
     install -m 0644 packaging/pam/cups "$out/etc/pam.d/cups"
-    install -m 0644 data/logrotate.d/presswork "$out/etc/logrotate.d/presswork"
+    install -m 0644 data/logrotate.d/yindle "$out/etc/logrotate.d/yindle"
 
     # systemd units (rewrite store paths), tmpfiles.d, and sysusers.d.
     for u in cups.service cups.socket cups.path cups-lpd@.service cups-lpd.socket; do
@@ -82,24 +82,24 @@ rustPlatform.buildRustPackage rec {
         --replace-quiet "/usr/sbin/cupsd" "$out/sbin/cupsd" \
         --replace-quiet "/usr/lib/cups/daemon/cups-lpd" "$out/lib/cups/daemon/cups-lpd"
     done
-    install -m 0644 data/tmpfiles.d/presswork.conf "$out/lib/tmpfiles.d/presswork.conf"
-    install -m 0644 data/sysusers.d/presswork.conf "$out/lib/sysusers.d/presswork.conf"
+    install -m 0644 data/tmpfiles.d/yindle.conf "$out/lib/tmpfiles.d/yindle.conf"
+    install -m 0644 data/sysusers.d/yindle.conf "$out/lib/sysusers.d/yindle.conf"
 
     for doc in README.md SECURITY.md CHANGELOG.md NOTICE LICENSE-APACHE LICENSE-MIT; do
-      [ -f "$doc" ] && install -m 0644 "$doc" "$out/share/doc/presswork/"
+      [ -f "$doc" ] && install -m 0644 "$doc" "$out/share/doc/yindle/"
     done
   '';
 
   meta = with lib; {
     description = "Memory-safe CUPS 2.x-compatible print spooler and IPP scheduler in Rust";
     longDescription = ''
-      presswork is a drop-in replacement for the CUPS scheduler (cupsd):
+      yindle is a drop-in replacement for the CUPS scheduler (cupsd):
       the same IPP wire protocol, config files, spool layout, and
       filter/backend contracts, implemented in Rust with unsafe code
       confined to a single audited FFI crate.
     '';
-    homepage = "https://github.com/vindeckyy/presswork";
-    changelog = "https://github.com/vindeckyy/presswork/blob/main/CHANGELOG.md";
+    homepage = "https://github.com/vindeckyy/yindle";
+    changelog = "https://github.com/vindeckyy/yindle/blob/main/CHANGELOG.md";
     license = with licenses; [ asl20 mit ];
     platforms = platforms.linux;
     mainProgram = "cupsd";

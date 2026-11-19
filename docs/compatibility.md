@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-This page summarizes Presswork's compatibility with the OpenPrinting CUPS 2.x surface. For per-test upstream `ipptool` results see [docs/conformance.md](conformance.md), and for intentional security defaults and roadmap items see [docs/deviations.md](deviations.md).
+This page summarizes Yindle's compatibility with the OpenPrinting CUPS 2.x surface. For per-test upstream `ipptool` results see [docs/conformance.md](conformance.md), and for intentional security defaults and roadmap items see [docs/deviations.md](deviations.md).
 
 ---
 

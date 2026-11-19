@@ -25,7 +25,7 @@ mime-db = { path = "../../crates/mime-db" }
 ops = { path = "../../crates/ops" }
 pipeline = { path = "../../crates/pipeline" }
 printer = { path = "../../crates/printer" }
-sys = { path = "../../crates/sys", package = "presswork-sys" }
+sys = { path = "../../crates/sys", package = "yindle-sys" }
 tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "signal", "fs", "io-util", "time", "sync", "process"] }
 tokio-rustls = "0.26.6"
 tracing = "0.1"

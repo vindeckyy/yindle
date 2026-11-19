@@ -82,7 +82,7 @@ impl DoctorReport {
     /// Render a crisp human-readable pass/warn/fail diagnostic table.
     #[must_use]
     pub fn render_text(&self) -> String {
-        let mut out = String::from("Presswork cupsd doctor\n");
+        let mut out = String::from("Yindle cupsd doctor\n");
         out.push_str("------------------------------------------------------------------------\n");
         for c in &self.checks {
             let _ = writeln!(out, "[{:4}] {:<24} {}", c.status.badge(), c.name, c.message);
@@ -544,7 +544,7 @@ fn check_host_conflicts(cfg: &Config, env: &DoctorEnv) -> DoctorCheck {
     let mut warnings = Vec::new();
     if env.apparmor_profile.exists() {
         warnings.push(format!(
-            "AppArmor profile {} exists and may restrict Presswork paths",
+            "AppArmor profile {} exists and may restrict Yindle paths",
             env.apparmor_profile.display()
         ));
     }
@@ -587,7 +587,7 @@ mod tests {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let p = std::env::temp_dir().join(format!(
-            "presswork-cupsd-doc-{}-{tag}-{id}",
+            "yindle-cupsd-doc-{}-{tag}-{id}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&p);
@@ -753,10 +753,8 @@ mod tests {
 
     #[test]
     fn doctor_component_checks_cover_warn_and_fail_branches() {
-        let base = std::env::temp_dir().join(format!(
-            "presswork-cupsd-doctor-parts-{}",
-            std::process::id()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("yindle-cupsd-doctor-parts-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
 

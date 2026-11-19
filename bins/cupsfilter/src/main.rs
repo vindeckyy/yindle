@@ -1,4 +1,4 @@
-//! `cupsfilter` — Presswork CUPS-compatible filter pipeline CLI (`cupsfilter(8)`).
+//! `cupsfilter` — Yindle CUPS-compatible filter pipeline CLI (`cupsfilter(8)`).
 //!
 //! Resolves MIME types via `mime-db::MimeDb::load_standard`, loads CUPS
 //! configuration via `cups-config`, optionally incorporates PPD `*cupsFilter` /
@@ -416,11 +416,7 @@ fn run_cupsfilter<R: Read, W: Write, E: Write, S: std::hash::BuildHasher>(
             return 0;
         }
         Ok(CliAction::Version) => {
-            let _ = writeln!(
-                stdout,
-                "cupsfilter (Presswork {})",
-                env!("CARGO_PKG_VERSION")
-            );
+            let _ = writeln!(stdout, "cupsfilter (Yindle {})", env!("CARGO_PKG_VERSION"));
             return 0;
         }
         Ok(CliAction::Run(a)) => *a,
@@ -997,7 +993,7 @@ printf 'FOO(%s)' "$(cat)"
             ),
             0
         );
-        assert!(String::from_utf8_lossy(&out).contains("Presswork"));
+        assert!(String::from_utf8_lossy(&out).contains("Yindle"));
 
         // 2. `--list-filters` fast path with `-i` and no stdin
         out.clear();
@@ -1022,7 +1018,7 @@ printf 'FOO(%s)' "$(cat)"
 
         // 3. Multi-stage execution from explicit file with auto-MIME + `-D` deletion
         let input_txt = te.root.join("note.txt");
-        fs::write(&input_txt, b"hello presswork").expect("write");
+        fs::write(&input_txt, b"hello yindle").expect("write");
         out.clear();
         err.clear();
         assert_eq!(
@@ -1049,10 +1045,7 @@ printf 'FOO(%s)' "$(cat)"
             "stderr={}",
             String::from_utf8_lossy(&err)
         );
-        assert_eq!(
-            String::from_utf8_lossy(&out),
-            "RaS2:%PDF-1.4\nhello presswork"
-        );
+        assert_eq!(String::from_utf8_lossy(&out), "RaS2:%PDF-1.4\nhello yindle");
         assert!(!input_txt.exists(), "-D should delete explicit input file");
         let err_str = String::from_utf8_lossy(&err);
         assert!(err_str.contains("texttopdf"));

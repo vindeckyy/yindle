@@ -233,7 +233,7 @@ fn ppd_upload_validation_and_cups_attr_injection_blocked() {
     assert!(caps
         .filter_formats
         .iter()
-        .any(|f| f == "application/vnd.presswork-test"));
+        .any(|f| f == "application/vnd.yindle-test"));
 }
 
 #[test]
@@ -493,7 +493,7 @@ fn print_uri_and_send_uri_reject_file_scheme_and_support_safe_fetcher() {
 #[test]
 fn gzip_decompression_huffman_headers_and_zip_bomb_guards() {
     // 1. Stored block round-trip.
-    let payload = b"Presswork IPP compression=gzip stored block test!";
+    let payload = b"Yindle IPP compression=gzip stored block test!";
     let gz = gzip_stored(payload);
     assert_eq!(decompress_gzip(&gz, 1024).unwrap(), payload);
 

@@ -2,9 +2,9 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "presswork.fullname" . }}
+  name: {{ include "yindle.fullname" . }}
   labels:
-    {{- include "presswork.labels" . | nindent 4 }}
+    {{- include "yindle.labels" . | nindent 4 }}
 spec:
   {{- if not (kindIs "invalid" .Values.podDisruptionBudget.minAvailable) }}
   minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
@@ -14,5 +14,5 @@ spec:
   {{- end }}
   selector:
     matchLabels:
-      {{- include "presswork.selectorLabels" . | nindent 6 }}
+      {{- include "yindle.selectorLabels" . | nindent 6 }}
 {{- end }}

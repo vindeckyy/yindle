@@ -1,16 +1,16 @@
 # Documented Deviations from OpenPrinting CUPS
 
-Presswork targets drop-in wire, configuration, spool, and filter/backend compatibility with OpenPrinting CUPS 2.x on Linux. Where Presswork intentionally differs from upstream CUPS—chiefly to eliminate classes of security vulnerabilities by default—or where an upstream capability is on the roadmap rather than yet shipped, it is recorded here.
+Yindle targets drop-in wire, configuration, spool, and filter/backend compatibility with OpenPrinting CUPS 2.x on Linux. Where Yindle intentionally differs from upstream CUPS—chiefly to eliminate classes of security vulnerabilities by default—or where an upstream capability is on the roadmap rather than yet shipped, it is recorded here.
 
-Any behavioral difference **not** listed on this page should be treated as a compatibility bug and reported via the [Compatibility Report](https://github.com/vindeckyy/presswork/issues/new?template=compat_report.md) template.
+Any behavioral difference **not** listed on this page should be treated as a compatibility bug and reported via the [Compatibility Report](https://github.com/vindeckyy/yindle/issues/new?template=compat_report.md) template.
 
 ---
 
 ## 1. Intentional Security-First Defaults
 
-Presswork flips several permissive upstream defaults to fail-closed settings so a fresh installation or migration cannot silently expose administrative controls or arbitrary file/network primitives.
+Yindle flips several permissive upstream defaults to fail-closed settings so a fresh installation or migration cannot silently expose administrative controls or arbitrary file/network primitives.
 
-| Area | OpenPrinting CUPS 2.x | Presswork | Rationale & Escape Hatch |
+| Area | OpenPrinting CUPS 2.x | Yindle | Rationale & Escape Hatch |
 |---|---|---|---|
 | **Default `Satisfy` mode** | `Satisfy any` inside `<Location>` / `<Limit>` unless `Satisfy all` is explicit | **`Satisfy all`** (`crates/cups-config/src/types.rs`, `crates/authz`) | Prevents an `Order deny,allow` block with empty `Allow`/`Deny` rules from bypassing `Require user @SYSTEM` or `Require user @OWNER`. Legacy configs that rely on `Satisfy any` can declare it explicitly; `cupsd --check-config` flags authenticated `Satisfy any` blocks (`LOCATION_SATISFY_ANY` / `POLICY_SATISFY_ANY`). |
 | **Systemd socket binding** | `cups.socket` ships `ListenStream=631` (binds `0.0.0.0:631` and `[::]:631` globally) | **Loopback-only** (`127.0.0.1:631`, `[::1]:631`, `/run/cups/cups.sock`) in `data/systemd/cups.socket` | Installing a print spooler must never expose TCP/631 to untrusted LANs by accident. Operators opt into network listeners explicitly via `systemctl edit cups.socket` alongside TLS (`SSLListen` / `Encryption Required`). See [docs/operations.md](operations.md#systemd-bare-metal--vm). |
@@ -32,7 +32,7 @@ Presswork flips several permissive upstream defaults to fail-closed settings so 
 
 ### External `cups-filters` Runtime Dependency
 
-Presswork ships the scheduler (`cupsd`), helper daemons (`cups-deviced`, `cups-driverd`, `cups-exec`, `cups-lpd`), `cupsfilter`, and all 9 standard backends (`socket`, `file`, `ipp`, `lpd`, `snmp`, `usb`, `dnssd`, `serial`, `parallel`). It does **not** reimplement OpenPrinting's document conversion filters (`pstops`, `pdftopdf`, `pdftoraster`, `rastertopwg`, `foomatic-rip`, etc.).
+Yindle ships the scheduler (`cupsd`), helper daemons (`cups-deviced`, `cups-driverd`, `cups-exec`, `cups-lpd`), `cupsfilter`, and all 9 standard backends (`socket`, `file`, `ipp`, `lpd`, `snmp`, `usb`, `dnssd`, `serial`, `parallel`). It does **not** reimplement OpenPrinting's document conversion filters (`pstops`, `pdftopdf`, `pdftoraster`, `rastertopwg`, `foomatic-rip`, etc.).
 
 - **Driverless IPP Everywhere / AirPrint queues** send PDF, PWG Raster, or URF directly to modern printers and require no external filters.
 - **Legacy PPD queues** or workflows requiring server-side PostScript/PDF/raster conversion require installing your distribution's `cups-filters` package (declared as `Recommends: cups-filters` in Debian/RPM and `optdepends` in Arch; optional via `--build-arg INSTALL_CUPS_FILTERS=true` in the `Dockerfile`).
@@ -51,11 +51,11 @@ Instead of linking against a distribution-specific `libpam` or `libcrypt.so.1` s
 
 ### Built-In Observability, Diagnostics, and Web UI Fallback
 
-Presswork extends the stock `cupsd` surface with enterprise-native endpoints and CLI tools while staying 100% compatible with existing IPP clients:
+Yindle extends the stock `cupsd` surface with enterprise-native endpoints and CLI tools while staying 100% compatible with existing IPP clients:
 
 - **HTTP endpoints**: `GET /healthz`, `GET /readyz`, and `GET /metrics` (Prometheus exposition format matching `deploy/monitoring/prometheus-alerts.yaml` and `deploy/monitoring/grafana-dashboard.json`).
-- **Built-in status Web UI fallback**: when `WebInterface Yes` is set and no static files or stock CGIs exist in `DocumentRoot` (unified to `/usr/share/cups/doc-root`), Presswork serves a clean, read-only, XSS-escaped HTML status UI on `/`, `/printers`, `/classes`, and `/jobs` with `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Content-Security-Policy` headers instead of returning a bare `404`.
-- **CLI diagnostics & structured logging**: `cupsd --check-config [--json]` audits configs for deprecated/moved/unknown directives and security risks; `cupsd doctor [-c ...] [-s ...] [--json]` checks host permissions, MIME DB, binaries, TLS certs, PAM/NSS, and AppArmor conflicts; `--log-format json` (or `PRESSWORK_LOG_FORMAT=json`) emits structured JSON logs alongside enterprise audit events.
+- **Built-in status Web UI fallback**: when `WebInterface Yes` is set and no static files or stock CGIs exist in `DocumentRoot` (unified to `/usr/share/cups/doc-root`), Yindle serves a clean, read-only, XSS-escaped HTML status UI on `/`, `/printers`, `/classes`, and `/jobs` with `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Content-Security-Policy` headers instead of returning a bare `404`.
+- **CLI diagnostics & structured logging**: `cupsd --check-config [--json]` audits configs for deprecated/moved/unknown directives and security risks; `cupsd doctor [-c ...] [-s ...] [--json]` checks host permissions, MIME DB, binaries, TLS certs, PAM/NSS, and AppArmor conflicts; `--log-format json` (or `YINDLE_LOG_FORMAT=json`) emits structured JSON logs alongside enterprise audit events.
 
 ### Spool Compatibility Enhancements
 
@@ -72,7 +72,7 @@ Presswork extends the stock `cupsd` surface with enterprise-native endpoints and
 
 ## 3. Transparent Roadmap (Not Yet Implemented)
 
-The following upstream or enterprise capabilities are **not** yet shipped in Presswork and are tracked on the roadmap:
+The following upstream or enterprise capabilities are **not** yet shipped in Yindle and are tracked on the roadmap:
 
 | Capability | Current Status | Planned Direction |
 |---|---|---|

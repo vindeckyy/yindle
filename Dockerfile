@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Multi-stage build for Presswork (CUPS-compatible print spooler in Rust).
+# Multi-stage build for Yindle (CUPS-compatible print spooler in Rust).
 #
 # Production builds can pin base images by digest via build args, e.g.:
 #   docker build \
@@ -34,20 +34,20 @@ RUN cargo build --workspace --release --locked \
 
 FROM ${RUNTIME_IMAGE}
 
-ARG VERSION=0.1.0
+ARG VERSION=0.1.1
 ARG REVISION=unknown
 ARG CREATED=unknown
 # Set --build-arg INSTALL_CUPS_FILTERS=true to bundle OpenPrinting cups-filters
 # (pstops, pdftopdf, rastertopwg, etc.) for non-driverless / legacy printers.
 ARG INSTALL_CUPS_FILTERS=false
 
-LABEL org.opencontainers.image.title="presswork" \
+LABEL org.opencontainers.image.title="yindle" \
       org.opencontainers.image.description="Memory-safe, CUPS-compatible print spooler and IPP scheduler in Rust" \
-      org.opencontainers.image.url="https://github.com/vindeckyy/presswork" \
-      org.opencontainers.image.source="https://github.com/vindeckyy/presswork" \
-      org.opencontainers.image.documentation="https://vindeckyy.github.io/presswork/" \
+      org.opencontainers.image.url="https://github.com/vindeckyy/yindle" \
+      org.opencontainers.image.source="https://github.com/vindeckyy/yindle" \
+      org.opencontainers.image.documentation="https://vindeckyy.github.io/yindle/" \
       org.opencontainers.image.licenses="Apache-2.0 OR MIT" \
-      org.opencontainers.image.vendor="Presswork" \
+      org.opencontainers.image.vendor="Yindle" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.created="${CREATED}"

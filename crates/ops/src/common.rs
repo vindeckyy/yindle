@@ -639,7 +639,7 @@ fn stored_attrs(p: &Printer, ctx: &Ctx, ppd_caps: Option<&PpdCapabilities>) -> V
         .iter()
         .find(|(n, _)| n.eq_ignore_ascii_case("printer-device-id"))
         .map_or_else(
-            || "MFG:presswork;MDL:ipp-everywhere;CMD:PWG-Raster;".into(),
+            || "MFG:yindle;MDL:ipp-everywhere;CMD:PWG-Raster;".into(),
             |(_, v)| v.clone(),
         );
     add1(

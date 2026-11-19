@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Presswork are documented in this file. The format follows
+All notable changes to yindle are documented in this file. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres
 to [Semantic Versioning](https://semver.org/).
 
@@ -40,9 +40,9 @@ documentation overhaul across the full workspace.
 - **Real `cupsfilter(8)` and `cups-exec` binaries** replacing placeholder stubs.
 - **Complete IPP 1.0–2.2 operation coverage (68 dispatched ops)** including `Set-Job-Attributes`, `Hold-New-Jobs`, `Release-Held-New-Jobs`, `CUPS-Add-Modify-Class`, `CUPS-Delete-Class`, `CUPS-Authenticate-Job`, `Send-URI`, `Cancel-My-Jobs`, `Cancel-Document`, `Set-Document-Attributes`, `Resubmit-Job`, `Reprocess-Job`, `Schedule-Job-After`, `CUPS-Move-Job` (single & all), real `Validate-Job`, all 11 `which-jobs`, bounded pure-Rust RFC 1952 gzip decompression, and live `queued-job-count`.
 - **Event-driven async scheduler & zero-downtime lifecycle (`bins/cupsd`)**: `tokio::sync::Notify` + housekeeping timer, multi-printer concurrent dispatch, `FilterLimit`, class routing, multi-document jobs, active PGID cancellation, full `BackendExit` + `ErrorPolicy` handling, stderr `StatBuf` (`STATE:`/`INFO:`/`PAGE:`/`ATTR:`) consumption, `SIGHUP` hot-reload, graceful `SIGTERM`/`SIGINT` drain, and `sd_notify` (`READY=1`, `RELOADING=1`, `STOPPING=1`, `WATCHDOG=1`).
-- **Enterprise observability & CLI diagnostics**: `GET /healthz`, `GET /readyz`, `GET /metrics` (Prometheus), built-in read-only HTML status Web UI fallback (`/`, `/printers`, `/classes`, `/jobs`), `--log-format json` / `PRESSWORK_LOG_FORMAT=json`, enterprise audit log, `page_log`, `cupsd -V`, `cupsd --check-config [--json]`, and `cupsd doctor [--json]`.
+- **Enterprise observability & CLI diagnostics**: `GET /healthz`, `GET /readyz`, `GET /metrics` (Prometheus), built-in read-only HTML status Web UI fallback (`/`, `/printers`, `/classes`, `/jobs`), `--log-format json` / `YINDLE_LOG_FORMAT=json`, enterprise audit log, `page_log`, `cupsd -V`, `cupsd --check-config [--json]`, and `cupsd doctor [--json]`.
 - **Pure-Rust D-Bus notifier (`crates/cups-dbus`)**: implements `org.cups.cupsd.Notifier` over D-Bus wire protocol v1 with graceful no-op fallback when no bus is present.
-- **Kubernetes & monitoring deployment assets**: Helm v2 chart (`deploy/helm/presswork/`), 6 Prometheus alert rules (`deploy/monitoring/prometheus-alerts.yaml`), and 11-panel Grafana dashboard (`deploy/monitoring/grafana-dashboard.json`).
+- **Kubernetes & monitoring deployment assets**: Helm v2 chart (`deploy/helm/yindle/`), 6 Prometheus alert rules (`deploy/monitoring/prometheus-alerts.yaml`), and 11-panel Grafana dashboard (`deploy/monitoring/grafana-dashboard.json`).
 - **Operational tooling & testing**: `./scripts/dev-local.sh` isolated quickstart, `./scripts/coverage-gate.sh` (`>= 95%` per-crate line coverage gate wired into CI and releases), `make install-files` (`CHOWN=0`) / `make coverage` / `make test-gate`, `tmpfiles.d`, `sysusers.d`, and `logrotate.d` configs.
 - **Expanded fuzzing (`fuzz/`)**: 4 new targets (`httpd_parse`, `authn_parse`, `backend_uri`, `dnssd_uri`) for 8 total `libFuzzer` targets with curated seed corpora.
 - **Documentation & Unix man pages**: comprehensive `docs/deviations.md`, enterprise SRE manual `docs/operations.md`, rewritten conflict-free `docs/migration.md`, updated `README.md`/`docs/*`/`RELEASING.md`, and groff man pages (`man/cupsd.8`, `man/cupsd.conf.5`, `man/cups-files.conf.5`, `man/cups-lpd.8`, `man/cupsfilter.8`).
@@ -58,6 +58,22 @@ documentation overhaul across the full workspace.
 - Fixed `install.sh` (non-destructive config preservation, fail-closed `SHA256SUMS`, `--uninstall`), `scripts/dist.sh` (clean `.deb` staging with zero `/` pollution, `0755` dir normalization, `DEBIAN/conffiles`, reachable `postinst` systemd activation), all distro packages (`debian`, `rpm`, `alpine`, `arch`, `aur-bin`, `nix`), and `.github/workflows/release.yml` + `publish.yml` (`workflow_call` chaining, 4-target Linux build matrix).
 
 ---
+
+## [0.1.1] - 2026-11-13
+
+### Changed
+
+- **Renamed: presswork is now yindle.** The old name collided with
+  PressWork (https://presswork.it/), a commercial office suite, see
+  issue #8. Thanks to Till Kamppeter for flagging it.
+- Repository, docs, package and crate names move to `yindle`.
+- The installed binaries keep their CUPS names (`cupsd`, `cupsfilter`,
+  and the rest) and all config, spool and service paths are unchanged,
+  so this is not a compatibility break.
+- One wire-visible string changes: the IEEE 1284 manufacturer token is
+  now `MFG:yindle`.
+- The Alpine OpenRC service is also renamed from `presswork` to
+  `yindle`; the systemd units keep their `cups.*` names.
 
 ## [0.1.0] - 2026-11-12
 
@@ -88,10 +104,14 @@ print spooler and IPP scheduler, built for drop-in compatibility.
 - `cargo audit` and `cargo deny`: clean.
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean on stable and
   MSRV 1.88; `cargo fmt --check`: clean.
-- Initial `cargo-fuzz` targets exercised (`ipp_decode`, `config_lexer`,
-  `printers_conf`, `mime_db`).
-- Differential runner (`scripts/differential.sh`) verified parity against stock
-  `cupsd`.
+- Fuzz: `ipp-codec`, `config-lexer`, `printers-conf`, and `mime-db`
+  targets exercised (~1.5M execs); three `mime-db` crashes found and
+  fixed before release.
+- Differential runner (`scripts/differential.sh`) executes the same
+  matrix against stock cupsd and yindle; every stock-pass test also
+  passes on yindle.
+- Memory: RSS flat at ~4.3 MB across 100 Print-Job requests in soak
+  testing.
 
 ### Known limitations (as of 0.1.0)
 

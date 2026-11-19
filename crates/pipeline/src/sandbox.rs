@@ -1,5 +1,5 @@
 //! Filter and backend sandboxing configuration, Linux Landlock ruleset
-//! construction, `presswork-sys::sandbox` orchestration, and `cups-exec`
+//! construction, `yindle-sys::sandbox` orchestration, and `cups-exec`
 //! invocation planning.
 
 use std::io;
@@ -305,7 +305,7 @@ pub struct SandboxReport {
     pub landlock_status: Option<LandlockStatus>,
 }
 
-/// Abstraction over `presswork-sys::sandbox` syscalls for deterministic testing.
+/// Abstraction over `yindle-sys::sandbox` syscalls for deterministic testing.
 pub trait SandboxOps {
     /// Return current effective `(uid, gid)`.
     fn current_euid_egid(&self) -> (u32, u32);
@@ -323,7 +323,7 @@ pub trait SandboxOps {
     fn apply_landlock(&mut self, rules: &[LandlockRule]) -> io::Result<LandlockStatus>;
 }
 
-/// Live OS implementation backed by `presswork-sys::sandbox`.
+/// Live OS implementation backed by `yindle-sys::sandbox`.
 pub struct OsSandboxOps;
 
 impl SandboxOps for OsSandboxOps {
@@ -428,7 +428,7 @@ pub fn apply_sandbox_with_ops<O: SandboxOps>(
     })
 }
 
-/// Apply [`SandboxConfig`] to the live calling process via `presswork-sys::sandbox`.
+/// Apply [`SandboxConfig`] to the live calling process via `yindle-sys::sandbox`.
 pub fn apply_current_process_sandbox(
     cfg: &SandboxConfig,
     is_backend: bool,

@@ -60,9 +60,9 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported privately to the project maintainers responsible for enforcement via
-the [Presswork maintainer GitHub profile](https://github.com/vindeckyy) or by
+the [Yindle maintainer GitHub profile](https://github.com/vindeckyy) or by
 opening a confidential report via
-[GitHub Private Reporting](https://github.com/vindeckyy/presswork/security/advisories/new)
+[GitHub Private Reporting](https://github.com/vindeckyy/yindle/security/advisories/new)
 (for conduct incidents requiring private maintainer attention). All complaints
 will be reviewed and investigated promptly and fairly.
 

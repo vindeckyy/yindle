@@ -1345,7 +1345,7 @@ mod tests {
         static N: AtomicU64 = AtomicU64::new(0);
         let id = N.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "presswork-printer-test-{}-{}-{id}",
+            "yindle-printer-test-{}-{}-{id}",
             std::process::id(),
             tag
         ));

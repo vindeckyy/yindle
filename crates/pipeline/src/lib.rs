@@ -926,7 +926,7 @@ fn make_status_channel(
 /// - Refuses to drop privileges or enforce sandboxing without `cups-exec`:
 ///   stable Rust's `CommandExt::{uid, gid}` cannot clear supplementary root
 ///   groups (`CommandExt::groups` is unstable `#![feature(setgroups)]`), whereas
-///   `cups-exec` calls `presswork_sys::drop_privileges` (`initgroups`/`setgroups(0, NULL)`
+///   `cups-exec` calls `yindle_sys::drop_privileges` (`initgroups`/`setgroups(0, NULL)`
 ///   + `setgid` + `setuid` + `PR_SET_NO_NEW_PRIVS` + Landlock).
 pub fn validate_stage_privilege_drop(
     eff_user: u32,

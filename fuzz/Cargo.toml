@@ -1,6 +1,6 @@
 [package]
-name = "presswork-fuzz"
-version = "0.1.0"
+name = "yindle-fuzz"
+version = "0.1.1"
 edition = "2021"
 publish = false
 

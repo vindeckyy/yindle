@@ -1,6 +1,6 @@
-.TH CUPSD 8 "2026-11-18" "Presswork 0.1.0" "System Administration"
+.TH CUPSD 8 "2026-11-18" "yindle 0.1.1" "System Administration"
 .SH NAME
-cupsd \- Presswork CUPS-compatible print scheduler and IPP server
+cupsd \- Yindle CUPS-compatible print scheduler and IPP server
 .SH SYNOPSIS
 .B cupsd
 .RB [ \-c
@@ -36,7 +36,7 @@ cupsd \- Presswork CUPS-compatible print scheduler and IPP server
 .RB [ \-h | \-\-help ]
 .SH DESCRIPTION
 .B cupsd
-is the Presswork print scheduler, a memory-safe Rust drop-in replacement for the
+is the Yindle print scheduler, a memory-safe Rust drop-in replacement for the
 OpenPrinting CUPS 2.x daemon.
 It implements the Internet Printing Protocol (IPP 1.0\(en2.2 and IPP Everywhere),
 HTTP/1.1 with RFC 2817 TLS upgrade and direct TLS/mTLS listeners, Unix domain
@@ -104,7 +104,7 @@ Test the configuration files for syntax errors, print diagnostics, and exit
 without starting the scheduler.
 .TP
 .BR \-v ", " \-V ", " \-\-version
-Print Presswork version information and exit with status 0.
+Print Yindle version information and exit with status 0.
 .TP
 .BR \-h ", " \-\-help
 Print usage summary and exit with status 0.
@@ -121,7 +121,7 @@ format.
 Set
 .B json
 (or the environment variable
-.BR PRESSWORK_LOG_FORMAT=json )
+.BR YINDLE_LOG_FORMAT=json )
 for newline-delimited structured JSON suitable for SIEM/ELK/Loki ingestion.
 .TP
 .BR \-\-check\-config " [" \-\-json ]
@@ -179,16 +179,16 @@ ready, or HTTP 503 Service Unavailable while draining or unhealthy.
 Prometheus text exposition
 .RB ( text/plain;\ version=0.0.4;\ charset=utf\-8 )
 exporting
-.BR presswork_jobs_active ,
-.BR presswork_jobs_pending ,
-.BR presswork_jobs_total ,
-.BR presswork_job_duration_seconds ,
-.BR presswork_ipp_requests_total ,
-.BR presswork_auth_failures_total ,
-.BR presswork_active_clients ,
-.BR presswork_filter_cost_current ,
+.BR yindle_jobs_active ,
+.BR yindle_jobs_pending ,
+.BR yindle_jobs_total ,
+.BR yindle_job_duration_seconds ,
+.BR yindle_ipp_requests_total ,
+.BR yindle_auth_failures_total ,
+.BR yindle_active_clients ,
+.BR yindle_filter_cost_current ,
 and
-.BR presswork_filter_limit .
+.BR yindle_filter_limit .
 .TP
 .BR "GET /" ", " /printers ", " /classes ", " /jobs
 When
@@ -232,7 +232,7 @@ and
 before exiting.
 .SH ENVIRONMENT
 .TP
-.B PRESSWORK_LOG_FORMAT
+.B YINDLE_LOG_FORMAT
 Set to
 .B json
 or
@@ -252,7 +252,7 @@ and variables are cleared before spawning children).
 Standard systemd readiness, reload, stop, and watchdog notification variables.
 .TP
 .B TZ
-POSIX time zone or zoneinfo identifier used by Presswork's thread-safe pure-Rust
+POSIX time zone or zoneinfo identifier used by Yindle's thread-safe pure-Rust
 RFC 8536 TZif localtime log formatter.
 .SH FILES
 .TP
@@ -301,7 +301,7 @@ Local Unix domain socket for IPP clients and
 .B SO_PEERCRED
 authentication.
 .SH SECURITY
-Presswork enforces
+Yindle enforces
 .B #![forbid(unsafe_code)]
 across all crates outside one audited FFI crate, defaults
 .B <Location>

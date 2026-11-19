@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "presswork.fullname" . }}
+  name: {{ include "yindle.fullname" . }}
   labels:
-    {{- include "presswork.labels" . | nindent 4 }}
+    {{- include "yindle.labels" . | nindent 4 }}
   {{- with .Values.service.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -19,14 +19,14 @@ spec:
       nodePort: {{ .Values.service.nodePort }}
       {{- end }}
   selector:
-    {{- include "presswork.selectorLabels" . | nindent 4 }}
+    {{- include "yindle.selectorLabels" . | nindent 4 }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "presswork.fullname" . }}-headless
+  name: {{ include "yindle.fullname" . }}-headless
   labels:
-    {{- include "presswork.labels" . | nindent 4 }}
+    {{- include "yindle.labels" . | nindent 4 }}
 spec:
   clusterIP: None
   publishNotReadyAddresses: false
@@ -36,4 +36,4 @@ spec:
       targetPort: ipp
       protocol: TCP
   selector:
-    {{- include "presswork.selectorLabels" . | nindent 4 }}
+    {{- include "yindle.selectorLabels" . | nindent 4 }}

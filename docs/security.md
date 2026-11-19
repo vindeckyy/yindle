@@ -1,6 +1,6 @@
 # Security Architecture & Threat Model
 
-Presswork is a network-facing print spooler and IPP scheduler that parses untrusted network packets, HTTP headers, configuration files, PPDs, and print documents while coordinating device backends. This document details the threat model, structural defenses, and verification controls shipped in Presswork.
+Yindle is a network-facing print spooler and IPP scheduler that parses untrusted network packets, HTTP headers, configuration files, PPDs, and print documents while coordinating device backends. This document details the threat model, structural defenses, and verification controls shipped in Yindle.
 
 For vulnerability reporting, Coordinated Vulnerability Disclosure (CVD) SLAs, and FIPS 140-3 guidance, see [SECURITY.md](../SECURITY.md).
 
@@ -8,9 +8,9 @@ For vulnerability reporting, Coordinated Vulnerability Disclosure (CVD) SLAs, an
 
 ## 1. Why the September 2024 CUPS RCE Chain Cannot Recur
 
-CVE-2024-47176 / CVE-2024-47076 / CVE-2024-47175 / CVE-2024-47177 demonstrated unauthenticated remote command execution in the C printing stack when attacker-controlled IPP attributes flowed unsanitized into generated PPDs and shell-evaluated filter command lines. Every link in that vulnerability class is structurally eliminated in Presswork:
+CVE-2024-47176 / CVE-2024-47076 / CVE-2024-47175 / CVE-2024-47177 demonstrated unauthenticated remote command execution in the C printing stack when attacker-controlled IPP attributes flowed unsanitized into generated PPDs and shell-evaluated filter command lines. Every link in that vulnerability class is structurally eliminated in Yindle:
 
-| Stage in the C RCE Chain | Presswork Defense | Enforcement Location |
+| Stage in the C RCE Chain | Yindle Defense | Enforcement Location |
 |---|---|---|
 | Untrusted IPP attributes parsed in C | Strictly typed, bounded pure-Rust wire codec (`#![forbid(unsafe_code)]`, `DecodeLimits`) fuzzed with `libFuzzer` | `crates/ipp-codec`, `fuzz/fuzz_targets/ipp_decode.rs` |
 | Unsanitized PPD/attribute injection (`*cupsFilter`, Foomatic, newlines) | Strict PPD validation rejects CR/LF, whitespace qualifiers, Foomatic command-injection patterns, `*cupsFilter` path traversal, and `cups*` injection; atomic `O_NOFOLLOW` writes | `crates/ops/src/ppd.rs` |
@@ -88,5 +88,5 @@ CVE-2024-47176 / CVE-2024-47076 / CVE-2024-47175 / CVE-2024-47177 demonstrated u
 - **Per-crate `>= 95%` line coverage gate**: CI and pre-release checks run `./scripts/coverage-gate.sh` (`cargo-llvm-cov --fail-under-lines 95`) on **every** workspace crate individually.
 - **Dependency & license enforcement**: `cargo audit` (RustSec) and `cargo deny check` (advisories, yanked/unmaintained crates, license allowlist, wildcard guard, source pinning) gate every PR and release.
 - **Pinned CI/CD**: all GitHub Actions workflows declare top-level `permissions: {}` with least-privilege per-job permissions and commit-SHA-pinned actions; OpenSSF Scorecard runs weekly and on pushes to `main`.
-- **CycloneDX SBOM & SLSA provenance**: every tagged release generates `presswork-<version>.cdx.json` via `anchore/sbom-action`, publishes unified `SHA256SUMS`, and signs SLSA build provenance (`actions/attest-build-provenance`) and SBOM attestations (`actions/attest-sbom`) for tarballs, `.deb` packages, and multi-arch GHCR images. Verify with `gh attestation verify` (see [SECURITY.md](../SECURITY.md#verifying-release-artifacts)).
+- **CycloneDX SBOM & SLSA provenance**: every tagged release generates `yindle-<version>.cdx.json` via `anchore/sbom-action`, publishes unified `SHA256SUMS`, and signs SLSA build provenance (`actions/attest-build-provenance`) and SBOM attestations (`actions/attest-sbom`) for tarballs, `.deb` packages, and multi-arch GHCR images. Verify with `gh attestation verify` (see [SECURITY.md](../SECURITY.md#verifying-release-artifacts)).
 - **License scoping**: original code and documentation are dual-licensed `Apache-2.0 OR MIT`; upstream-derived MIME database files (`data/mime/mime.{types,convs}`) are scoped strictly under `Apache-2.0` as documented in [NOTICE](../NOTICE).

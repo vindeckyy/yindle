@@ -1,6 +1,6 @@
-# Presswork Documentation
+# Yindle Documentation
 
-Presswork is a memory-safe, enterprise-hardened, drop-in replacement for the CUPS 2.x print spooler and IPP scheduler (`cupsd`), written in Rust. It preserves the Common UNIX Printing System's IPP 1.0–2.2 wire protocol, `/etc/cups` configuration files, `/var/spool/cups` spool layout, and filter/backend process contracts so existing clients, desktop print dialogs, scripts, and drivers work unmodified.
+Yindle is a memory-safe, enterprise-hardened, drop-in replacement for the CUPS 2.x print spooler and IPP scheduler (`cupsd`), written in Rust. It preserves the Common UNIX Printing System's IPP 1.0–2.2 wire protocol, `/etc/cups` configuration files, `/var/spool/cups` spool layout, and filter/backend process contracts so existing clients, desktop print dialogs, scripts, and drivers work unmodified.
 
 ## Highlights
 
@@ -20,7 +20,7 @@ Presswork is a memory-safe, enterprise-hardened, drop-in replacement for the CUP
 docker compose up --build -d
 
 # 3. Native Linux install (x86_64 & aarch64, verified SHA256SUMS)
-curl -fsSL https://raw.githubusercontent.com/vindeckyy/presswork/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vindeckyy/yindle/main/install.sh | sh
 ```
 
 ## Documentation Guide
@@ -35,4 +35,4 @@ curl -fsSL https://raw.githubusercontent.com/vindeckyy/presswork/main/install.sh
 - [0.1.0 Release Announcement](announce-0.1.0.md) — initial public release notes
 
 Source, issues, security advisories, and releases:
-[github.com/vindeckyy/presswork](https://github.com/vindeckyy/presswork)
+[github.com/vindeckyy/yindle](https://github.com/vindeckyy/yindle)

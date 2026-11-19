@@ -1,40 +1,40 @@
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: presswork-alerts
+  name: yindle-alerts
   labels:
-    app.kubernetes.io/name: presswork
+    app.kubernetes.io/name: yindle
     app.kubernetes.io/component: monitoring
     release: prometheus
 spec:
   groups:
-    - name: presswork.availability
+    - name: yindle.availability
       interval: 30s
       rules:
         - alert: CupsdDown
-          expr: up{job=~".*presswork.*"} == 0
+          expr: up{job=~".*yindle.*"} == 0
           for: 2m
           labels:
             severity: critical
-            service: presswork
+            service: yindle
             component: scheduler
           annotations:
-            summary: "Presswork cupsd instance is down ({{ $labels.instance }})"
+            summary: "Yindle cupsd instance is down ({{ $labels.instance }})"
             description: >-
-              Presswork print scheduler {{ $labels.instance }} in namespace
+              Yindle print scheduler {{ $labels.instance }} in namespace
               {{ $labels.namespace }} has been unreachable for more than 2 minutes.
               Print submission and IPP polling are degraded or unavailable.
-            runbook_url: "https://github.com/vindeckyy/presswork/blob/main/docs/operations.md#cupsd-down"
+            runbook_url: "https://github.com/vindeckyy/yindle/blob/main/docs/operations.md#cupsd-down"
 
-    - name: presswork.queues
+    - name: yindle.queues
       interval: 30s
       rules:
         - alert: PrintQueueBacklog
-          expr: sum by (instance, namespace, printer) (presswork_jobs_pending) > 50
+          expr: sum by (instance, namespace, printer) (yindle_jobs_pending) > 50
           for: 10m
           labels:
             severity: warning
-            service: presswork
+            service: yindle
             component: spooler
           annotations:
             summary: "Print queue backlog on {{ $labels.printer }} ({{ $value }} pending jobs)"
@@ -42,21 +42,21 @@ spec:
               Printer queue {{ $labels.printer }} on {{ $labels.instance }} has had
               {{ $value }} pending jobs for over 10 minutes. Check printer offline
               state, paused queues, or backend connectivity.
-            runbook_url: "https://github.com/vindeckyy/presswork/blob/main/docs/operations.md#print-queue-backlog"
+            runbook_url: "https://github.com/vindeckyy/yindle/blob/main/docs/operations.md#print-queue-backlog"
 
         - alert: HighJobFailureRate
           expr: >-
             (
-              sum by (instance, namespace) (rate(presswork_jobs_total{state=~"aborted|canceled-at-device"}[15m]))
+              sum by (instance, namespace) (rate(yindle_jobs_total{state=~"aborted|canceled-at-device"}[15m]))
               /
-              clamp_min(sum by (instance, namespace) (rate(presswork_jobs_total[15m])), 1e-9)
+              clamp_min(sum by (instance, namespace) (rate(yindle_jobs_total[15m])), 1e-9)
             ) > 0.10
             and
-            sum by (instance, namespace) (increase(presswork_jobs_total[15m])) >= 5
+            sum by (instance, namespace) (increase(yindle_jobs_total[15m])) >= 5
           for: 10m
           labels:
             severity: warning
-            service: presswork
+            service: yindle
             component: pipeline
           annotations:
             summary: "High print job failure rate ({{ $value | humanizePercentage }})"
@@ -64,57 +64,57 @@ spec:
               More than 10% of print jobs on {{ $labels.instance }} failed or aborted
               over the last 15 minutes. Inspect /var/log/cups/error_log for backend
               exit codes or filter pipeline failures.
-            runbook_url: "https://github.com/vindeckyy/presswork/blob/main/docs/operations.md#high-job-failure-rate"
+            runbook_url: "https://github.com/vindeckyy/yindle/blob/main/docs/operations.md#high-job-failure-rate"
 
         - alert: FilterLimitSaturated
           expr: >-
             (
-              presswork_filter_cost_current
+              yindle_filter_cost_current
               /
-              clamp_min(presswork_filter_limit, 1)
+              clamp_min(yindle_filter_limit, 1)
             ) > 0.90
-            and presswork_filter_limit > 0
+            and yindle_filter_limit > 0
           for: 5m
           labels:
             severity: warning
-            service: presswork
+            service: yindle
             component: pipeline
           annotations:
             summary: "FilterLimit saturated on {{ $labels.instance }} ({{ $value | humanizePercentage }})"
             description: >-
-              Presswork filter pipeline cost on {{ $labels.instance }} has exceeded
+              Yindle filter pipeline cost on {{ $labels.instance }} has exceeded
               90% of FilterLimit for 5 minutes. New jobs are being throttled; check
               for stuck filters or raise FilterLimit if host CPU/RAM permits.
-            runbook_url: "https://github.com/vindeckyy/presswork/blob/main/docs/operations.md#filter-limit-saturated"
+            runbook_url: "https://github.com/vindeckyy/yindle/blob/main/docs/operations.md#filter-limit-saturated"
 
-    - name: presswork.security
+    - name: yindle.security
       interval: 30s
       rules:
         - alert: HighAuthFailures
-          expr: sum by (instance, namespace) (rate(presswork_auth_failures_total[5m])) > 5
+          expr: sum by (instance, namespace) (rate(yindle_auth_failures_total[5m])) > 5
           for: 5m
           labels:
             severity: warning
-            service: presswork
+            service: yindle
             component: authn
           annotations:
             summary: "Elevated authentication failures on {{ $labels.instance }}"
             description: >-
-              Presswork instance {{ $labels.instance }} is seeing {{ printf "%.1f" $value }}
+              Yindle instance {{ $labels.instance }} is seeing {{ printf "%.1f" $value }}
               authentication failures per second over the last 5 minutes. Investigate
               potential credential stuffing, misconfigured clients, or PAM/LDAP outages.
-            runbook_url: "https://github.com/vindeckyy/presswork/blob/main/docs/operations.md#high-auth-failures"
+            runbook_url: "https://github.com/vindeckyy/yindle/blob/main/docs/operations.md#high-auth-failures"
 
-    - name: presswork.storage
+    - name: yindle.storage
       interval: 60s
       rules:
         - alert: SpoolDiskUsage
           expr: >-
             (
               (
-                kubelet_volume_stats_used_bytes{persistentvolumeclaim=~".*spool.*presswork.*|.*presswork.*spool.*"}
+                kubelet_volume_stats_used_bytes{persistentvolumeclaim=~".*spool.*yindle.*|.*yindle.*spool.*"}
                 /
-                clamp_min(kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~".*spool.*presswork.*|.*presswork.*spool.*"}, 1)
+                clamp_min(kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~".*spool.*yindle.*|.*yindle.*spool.*"}, 1)
               ) > 0.85
             )
             or
@@ -130,12 +130,12 @@ spec:
           for: 10m
           labels:
             severity: warning
-            service: presswork
+            service: yindle
             component: storage
           annotations:
             summary: "Spool storage usage above 85% ({{ $value | humanizePercentage }})"
             description: >-
-              Presswork spool volume (/var/spool/cups) is above 85% capacity.
+              Yindle spool volume (/var/spool/cups) is above 85% capacity.
               Purge stale completed job documents (PreserveJobFiles) or expand the
               spool PVC before new print submissions fail with ENOSPC.
-            runbook_url: "https://github.com/vindeckyy/presswork/blob/main/docs/operations.md#spool-disk-usage"
+            runbook_url: "https://github.com/vindeckyy/yindle/blob/main/docs/operations.md#spool-disk-usage"

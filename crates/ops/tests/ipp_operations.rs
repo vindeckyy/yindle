@@ -1096,7 +1096,9 @@ fn admin_printers_classes_hold_new_jobs_and_common_attr_uniqueness() {
         .unwrap()
         .values
         .iter()
-        .any(|v| matches!(v, Value::MimeMediaType(t) if t.as_str() == "application/vnd.presswork-test")));
+        .any(
+            |v| matches!(v, Value::MimeMediaType(t) if t.as_str() == "application/vnd.yindle-test")
+        ));
 
     // 2. Hold-New-Jobs + submit job (automatically PendingHeld!) + Release-Held-New-Jobs (released to Pending!).
     let hnj = with_printer_uri(

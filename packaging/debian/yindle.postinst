@@ -33,8 +33,8 @@ case "$1" in
 
         chown -R lp:lp /var/spool/cups /var/log/cups /var/cache/cups 2>/dev/null || true
 
-        if command -v systemd-tmpfiles >/dev/null 2>&1 && [ -f /usr/lib/tmpfiles.d/presswork.conf ]; then
-            systemd-tmpfiles --create presswork.conf 2>/dev/null || true
+        if command -v systemd-tmpfiles >/dev/null 2>&1 && [ -f /usr/lib/tmpfiles.d/yindle.conf ]; then
+            systemd-tmpfiles --create yindle.conf 2>/dev/null || true
         else
             mkdir -p /run/cups /run/cups/certs
             chown -R lp:lp /run/cups 2>/dev/null || true

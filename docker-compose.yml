@@ -1,4 +1,4 @@
-# Evaluate or run Presswork cleanly without colliding with a host CUPS daemon.
+# Evaluate or run Yindle cleanly without colliding with a host CUPS daemon.
 # Binds host loopback 127.0.0.1:8631 -> container 631 with least-privilege
 # non-root execution, persistent config/spool volumes, and healthchecks.
 #
@@ -7,7 +7,7 @@
 #   lpstat -h 127.0.0.1:8631 -t
 services:
   cupsd:
-    image: ${PRESSWORK_IMAGE:-ghcr.io/vindeckyy/presswork:0.1.0}
+    image: ${YINDLE_IMAGE:-ghcr.io/vindeckyy/yindle:0.1.1}
     build:
       context: .
       dockerfile: Dockerfile

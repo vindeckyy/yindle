@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # dev-local.sh — one-command, unprivileged local quickstart & smoke test.
 #
-# Starts an isolated presswork `cupsd` on 127.0.0.1:8631 with temporary spool
+# Starts an isolated yindle `cupsd` on 127.0.0.1:8631 with temporary spool
 # and config (zero root, zero conflict with host CUPS), verifies `/healthz`
 # and IPP `CUPS-Get-Printers`, creates a test queue (`dev-test`), prints a
 # test job, verifies output, and tears down cleanly.
@@ -51,7 +51,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-DEVROOT=$(mktemp -d "${TMPDIR:-/tmp}/presswork-dev.XXXXXX")
+DEVROOT=$(mktemp -d "${TMPDIR:-/tmp}/yindle-dev.XXXXXX")
 DAEMON_PID=""
 
 cleanup() {
@@ -71,7 +71,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 if [ "$DO_BUILD" = 1 ]; then
-    echo "[1/6] Building presswork workspace ($PROFILE)..."
+    echo "[1/6] Building yindle workspace ($PROFILE)..."
     if [ "$PROFILE" = "release" ]; then
         cargo build --workspace --release
     else
@@ -256,7 +256,7 @@ printer_group = (
     + ipp_attr(0x45, "device-uri", f"file://{out_path}")
     + ipp_attr(0x22, "printer-is-accepting-jobs", b"\x01")
     + ipp_attr(0x23, "printer-state", struct.pack(">I", 3))  # idle
-    + ipp_attr(0x41, "printer-info", "Presswork dev-local smoke test queue")
+    + ipp_attr(0x41, "printer-info", "Yindle dev-local smoke test queue")
 )
 status, _ = ipp_request("/admin/", 0x4003, 2, add_op_attrs, extra_groups=printer_group)
 if status > 0x00FF:
@@ -277,7 +277,7 @@ print_attrs = (
     + ipp_attr(0x42, "job-name", "dev-local-smoke-test")
     + ipp_attr(0x49, "document-format", "application/octet-stream")
 )
-test_doc = b"Hello from Presswork dev-local smoke test!\n"
+test_doc = b"Hello from Yindle dev-local smoke test!\n"
 status, _ = ipp_request("/printers/dev-test", 0x0002, 4, print_attrs, doc=test_doc)
 if status > 0x00FF:
     raise RuntimeError(f"Print-Job failed: status=0x{status:04x}")
@@ -303,7 +303,7 @@ echo "[5/6] Smoke test PASSED on 127.0.0.1:$PORT!"
 
 if [ "$KEEP" = 1 ]; then
     echo ""
-    echo "Presswork dev daemon is running (PID $DAEMON_PID):"
+    echo "Yindle dev daemon is running (PID $DAEMON_PID):"
     echo "  IPP URL:    http://127.0.0.1:$PORT"
     echo "  Unix sock:  $DEVROOT/run/cups.sock"
     echo "  Logs:       $DEVROOT/logs/"

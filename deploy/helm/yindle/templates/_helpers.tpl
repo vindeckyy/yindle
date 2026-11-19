@@ -1,14 +1,14 @@
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "presswork.name" -}}
+{{- define "yindle.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Create a default fully qualified app name.
 */}}
-{{- define "presswork.fullname" -}}
+{{- define "yindle.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
@@ -24,16 +24,16 @@ Create a default fully qualified app name.
 {{/*
 Create chart name and version as used by the chart label.
 */}}
-{{- define "presswork.chart" -}}
+{{- define "yindle.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Common labels.
 */}}
-{{- define "presswork.labels" -}}
-helm.sh/chart: {{ include "presswork.chart" . }}
-{{ include "presswork.selectorLabels" . }}
+{{- define "yindle.labels" -}}
+helm.sh/chart: {{ include "yindle.chart" . }}
+{{ include "yindle.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
@@ -43,17 +43,17 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/*
 Selector labels.
 */}}
-{{- define "presswork.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "presswork.name" . }}
+{{- define "yindle.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "yindle.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
 Create the name of the service account to use.
 */}}
-{{- define "presswork.serviceAccountName" -}}
+{{- define "yindle.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
-{{- default (include "presswork.fullname" .) .Values.serviceAccount.name }}
+{{- default (include "yindle.fullname" .) .Values.serviceAccount.name }}
 {{- else }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
@@ -62,7 +62,7 @@ Create the name of the service account to use.
 {{/*
 Container image reference.
 */}}
-{{- define "presswork.image" -}}
+{{- define "yindle.image" -}}
 {{- $tag := default .Chart.AppVersion .Values.image.tag }}
 {{- printf "%s:%s" .Values.image.repository $tag }}
 {{- end }}

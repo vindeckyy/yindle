@@ -223,11 +223,11 @@ fn page_shell(title: &str, server_name: &str, body: &str) -> String {
          <head>\n\
          <meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n\
-         <title>{esc_title} - Presswork ({esc_server})</title>\n\
+         <title>{esc_title} - Yindle ({esc_server})</title>\n\
          </head>\n\
          <body>\n\
          <header>\n\
-         <h1>Presswork Print Scheduler {esc_ver} ({esc_server})</h1>\n\
+         <h1>Yindle Print Scheduler {esc_ver} ({esc_server})</h1>\n\
          <nav>\n\
          <a href=\"/\">Home</a> | \
          <a href=\"/printers\">Printers</a> | \
@@ -627,7 +627,7 @@ mod tests {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let p = std::env::temp_dir().join(format!(
-            "presswork-cupsd-web-{}-{tag}-{id}",
+            "yindle-cupsd-web-{}-{tag}-{id}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&p);

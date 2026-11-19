@@ -324,7 +324,7 @@ pub struct ServerOptions {
 impl Default for ServerOptions {
     fn default() -> Self {
         Self {
-            server_tokens: "CUPS/2.5 (presswork)".into(),
+            server_tokens: "CUPS/2.5 (yindle)".into(),
             max_body: DEFAULT_MAX_BODY,
             idle_timeout: Duration::from_secs(300),
             max_bad_requests: 1,
@@ -363,7 +363,7 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            server_tokens: "CUPS/2.5 (presswork)".into(),
+            server_tokens: "CUPS/2.5 (yindle)".into(),
             max_body: Some(DEFAULT_MAX_BODY),
             spool_threshold: Some(DEFAULT_SPOOL_THRESHOLD),
             spool_dir: None,
@@ -998,10 +998,7 @@ fn create_spool_file(dir: Option<&Path>) -> io::Result<(PathBuf, tokio::fs::File
     let base = dir.map_or_else(std::env::temp_dir, Path::to_path_buf);
     for _ in 0..16 {
         let seq = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = base.join(format!(
-            "presswork-http-body-{}-{seq}.tmp",
-            std::process::id()
-        ));
+        let path = base.join(format!("yindle-http-body-{}-{seq}.tmp", std::process::id()));
         let mut opts = std::fs::OpenOptions::new();
         opts.create_new(true).write(true);
         #[cfg(unix)]
@@ -1470,7 +1467,7 @@ mod tests {
     fn large_body_spools_to_temp_file_and_cleans_up_or_persists() {
         block_on(async {
             let dir =
-                std::env::temp_dir().join(format!("presswork-httpd-spool-{}", std::process::id()));
+                std::env::temp_dir().join(format!("yindle-httpd-spool-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
 
@@ -1884,7 +1881,7 @@ mod tests {
             // 7. Spooled body cleanup when chunked body errors mid-stream + persist failure rollback
             //    + ReadBuf compaction across > 4096 byte reads.
             let dir =
-                std::env::temp_dir().join(format!("presswork-httpd-edge-{}", std::process::id()));
+                std::env::temp_dir().join(format!("yindle-httpd-edge-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
 
@@ -1902,7 +1899,7 @@ mod tests {
                     let sp = req.body.into_spooled().unwrap();
                     // Persist to non-existent directory fails AND restores path so Drop cleans up!
                     assert!(sp
-                        .persist(Path::new("/nonexistent-dir-presswork-xyz/file"))
+                        .persist(Path::new("/nonexistent-dir-yindle-xyz/file"))
                         .is_err());
                     Response::status(StatusCode::OK)
                 })
@@ -1965,7 +1962,7 @@ mod tests {
     fn spooled_body_cleaned_up_on_task_cancel() {
         block_on(async {
             let dir =
-                std::env::temp_dir().join(format!("presswork-httpd-cancel-{}", std::process::id()));
+                std::env::temp_dir().join(format!("yindle-httpd-cancel-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
 

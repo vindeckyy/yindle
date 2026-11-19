@@ -1,7 +1,7 @@
 #!/bin/sh
-# presswork one-command installer.
+# yindle one-command installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/vindeckyy/presswork/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/vindeckyy/yindle/main/install.sh | sh
 #
 # Options:
 #   --no-start              Install files and units without starting services
@@ -9,7 +9,7 @@
 #   --from DIR              Install from an already-unpacked release tree
 #   --force                 Proceed even if another cupsd is installed
 #   --insecure-skip-verify  Skip SHA256SUMS verification (NOT recommended)
-#   --uninstall             Remove installed presswork binaries and units
+#   --uninstall             Remove installed yindle binaries and units
 #                           (preserves /etc/cups/*.conf and /var/spool/cups)
 #   -h, --help              Show this help message
 #
@@ -20,7 +20,7 @@
 # and enables socket activation (cups.socket + cups.path).
 set -eu
 
-REPO=vindeckyy/presswork
+REPO=vindeckyy/yindle
 
 die() { echo "install.sh: $*" >&2; exit 1; }
 
@@ -34,7 +34,7 @@ Options:
   --from DIR              Install from an already-unpacked release tree
   --force                 Proceed even if another cupsd is installed
   --insecure-skip-verify  Skip SHA256SUMS verification (NOT recommended)
-  --uninstall             Remove installed presswork binaries and units
+  --uninstall             Remove installed yindle binaries and units
   -h, --help              Show this help message
 EOF
 }
@@ -146,17 +146,17 @@ if [ "$UNINSTALL" = 1 ]; then
     for u in cups.service cups.socket cups.path cups-lpd@.service cups-lpd.socket; do
         $SUDO rm -f "/usr/lib/systemd/system/$u"
     done
-    $SUDO rm -f /usr/lib/tmpfiles.d/presswork.conf \
-        /usr/lib/sysusers.d/presswork.conf \
+    $SUDO rm -f /usr/lib/tmpfiles.d/yindle.conf \
+        /usr/lib/sysusers.d/yindle.conf \
         /usr/share/cups/mime/mime.types \
         /usr/share/cups/mime/mime.convs \
         /etc/cups/cupsd.conf.default \
         /etc/cups/cups-files.conf.default
-    $SUDO rm -rf /usr/share/doc/presswork
+    $SUDO rm -rf /usr/share/doc/yindle
     if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
         $SUDO systemctl daemon-reload || true
     fi
-    echo "presswork uninstalled."
+    echo "yindle uninstalled."
     echo "  Preserved user configuration and state:"
     echo "    /etc/cups/ (cupsd.conf, cups-files.conf, printers.conf, ssl/)"
     echo "    /var/spool/cups/, /var/log/cups/, /var/cache/cups/"
@@ -164,7 +164,7 @@ if [ "$UNINSTALL" = 1 ]; then
 fi
 
 # Refuse to silently overwrite a distro-managed cupsd.
-if [ "$FORCE" = 0 ] && [ -x /usr/sbin/cupsd ] && [ ! -f /usr/share/doc/presswork/README.md ]; then
+if [ "$FORCE" = 0 ] && [ -x /usr/sbin/cupsd ] && [ ! -f /usr/share/doc/yindle/README.md ]; then
     cat >&2 <<'EOF'
 install.sh: an existing /usr/sbin/cupsd was found.
   On Debian/Ubuntu remove it first (apt remove cups-daemon; keep
@@ -198,7 +198,7 @@ if [ -z "$SRC" ]; then
         fi
         VERSION=${VERSION#v}
 
-        PKG="presswork-$VERSION-$TARGET"
+        PKG="yindle-$VERSION-$TARGET"
         BASE="https://github.com/$REPO/releases/download/v$VERSION"
         echo "install.sh: fetching $PKG"
         fetch "$BASE/$PKG.tar.gz" "$TMP/$PKG.tar.gz"
@@ -212,11 +212,11 @@ if [ -z "$SRC" ]; then
         fi
 
         tar -C "$TMP" -xzf "$TMP/$PKG.tar.gz"
-        SRC="$TMP/presswork-$VERSION"
+        SRC="$TMP/yindle-$VERSION"
     fi
 fi
 
-[ -x "$SRC/usr/sbin/cupsd" ] || die "$SRC does not look like a presswork release tree"
+[ -x "$SRC/usr/sbin/cupsd" ] || die "$SRC does not look like a yindle release tree"
 
 # ---- accounts ---------------------------------------------------------------
 # Create lp user/group and lpadmin group. Do NOT add lp to lpadmin: filters
@@ -251,7 +251,7 @@ install_config_preserve "$FILES_SRC" /etc/cups/cups-files.conf 0640 lp
 
 $SUDO install -d -m 0755 /etc/pam.d /etc/logrotate.d
 install_config_preserve "$SRC/etc/pam.d/cups" /etc/pam.d/cups 0644 root
-install_config_preserve "$SRC/etc/logrotate.d/presswork" /etc/logrotate.d/presswork 0644 root
+install_config_preserve "$SRC/etc/logrotate.d/yindle" /etc/logrotate.d/yindle 0644 root
 
 # Runtime, spool, log, and cache directories.
 $SUDO install -d -m 0710 -o lp -g lp /var/spool/cups /var/spool/cups/tmp
@@ -260,17 +260,17 @@ $SUDO install -d -m 0770 -o lp -g lp /var/cache/cups /var/cache/cups/rss
 $SUDO install -d -m 0755 -o lp -g lp /run/cups /run/cups/certs
 
 # Install tmpfiles.d/sysusers.d if shipped outside /usr (fallback for custom trees).
-if [ -f "$SRC/data/tmpfiles.d/presswork.conf" ] && [ ! -f /usr/lib/tmpfiles.d/presswork.conf ]; then
+if [ -f "$SRC/data/tmpfiles.d/yindle.conf" ] && [ ! -f /usr/lib/tmpfiles.d/yindle.conf ]; then
     $SUDO install -d -m 0755 /usr/lib/tmpfiles.d
-    $SUDO install -m 0644 "$SRC/data/tmpfiles.d/presswork.conf" /usr/lib/tmpfiles.d/presswork.conf
+    $SUDO install -m 0644 "$SRC/data/tmpfiles.d/yindle.conf" /usr/lib/tmpfiles.d/yindle.conf
 fi
-if [ -f "$SRC/data/sysusers.d/presswork.conf" ] && [ ! -f /usr/lib/sysusers.d/presswork.conf ]; then
+if [ -f "$SRC/data/sysusers.d/yindle.conf" ] && [ ! -f /usr/lib/sysusers.d/yindle.conf ]; then
     $SUDO install -d -m 0755 /usr/lib/sysusers.d
-    $SUDO install -m 0644 "$SRC/data/sysusers.d/presswork.conf" /usr/lib/sysusers.d/presswork.conf
+    $SUDO install -m 0644 "$SRC/data/sysusers.d/yindle.conf" /usr/lib/sysusers.d/yindle.conf
 fi
 
-if command -v systemd-tmpfiles >/dev/null 2>&1 && [ -f /usr/lib/tmpfiles.d/presswork.conf ]; then
-    $SUDO systemd-tmpfiles --create presswork.conf 2>/dev/null || true
+if command -v systemd-tmpfiles >/dev/null 2>&1 && [ -f /usr/lib/tmpfiles.d/yindle.conf ]; then
+    $SUDO systemd-tmpfiles --create yindle.conf 2>/dev/null || true
 fi
 
 # ---- activation -------------------------------------------------------------
@@ -284,7 +284,7 @@ if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
 fi
 
 # ---- post-install verification ----------------------------------------------
-echo "presswork ${VERSION:-release} installed."
+echo "yindle ${VERSION:-release} installed."
 if [ -x /usr/sbin/cupsd ]; then
     if $SUDO /usr/sbin/cupsd -t >/dev/null 2>&1; then
         echo "  config check: OK (/usr/sbin/cupsd -t)"

@@ -1,7 +1,7 @@
 #!/bin/sh
 # dist.sh — build release artifacts into ./dist:
-#   presswork-$VER-$TARGET.tar.gz          FHS tree + install.sh
-#   presswork_${VER}-1_${DEB_ARCH}.deb     Debian package (dpkg-deb)
+#   yindle-$VER-$TARGET.tar.gz          FHS tree + install.sh
+#   yindle_${VER}-1_${DEB_ARCH}.deb     Debian package (dpkg-deb)
 #   SHA256SUMS
 # Run from the repo root. Used by release.yml; safe to run locally without root.
 set -eu
@@ -13,7 +13,7 @@ command -v cargo >/dev/null 2>&1 || PATH="$HOME/.cargo/bin:$PATH"
 
 VER=${1:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)}
 TARGET=$(rustc -vV | sed -n 's/^host: //p')
-PKG="presswork-$VER-$TARGET"
+PKG="yindle-$VER-$TARGET"
 
 if command -v dpkg >/dev/null 2>&1; then
     DEB_ARCH=$(dpkg --print-architecture)
@@ -27,12 +27,12 @@ else
     esac
 fi
 
-DEB_FILE="presswork_${VER}-1_${DEB_ARCH}.deb"
+DEB_FILE="yindle_${VER}-1_${DEB_ARCH}.deb"
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-TAR_STAGE="$WORK/presswork-$VER"
+TAR_STAGE="$WORK/yindle-$VER"
 DEB_STAGE="$WORK/deb-stage"
 
 rm -rf dist
@@ -56,7 +56,7 @@ chmod 0770 "$TAR_STAGE/var/cache/cups" "$TAR_STAGE/var/cache/cups/rss"
 chmod 0700 "$TAR_STAGE/usr/lib/cups/backend/usb" "$TAR_STAGE/usr/lib/cups/backend/parallel"
 
 tar -C "$WORK" --owner=0 --group=0 --numeric-owner \
-    -czf "dist/$PKG.tar.gz" "presswork-$VER"
+    -czf "dist/$PKG.tar.gz" "yindle-$VER"
 
 # ---- Debian .deb staging (separate clean temp dir — zero / pollution) ------
 make install-files DESTDIR="$DEB_STAGE" PROFILE=release CHOWN=0 >/dev/null
@@ -83,13 +83,13 @@ mkdir -p "$DEB"
 chmod 0755 "$DEB"
 
 cat > "$DEB/control" <<EOF
-Package: presswork
+Package: yindle
 Version: $VER-1
 Section: net
 Priority: optional
 Architecture: $DEB_ARCH
 Maintainer: vindeckyy <35399491+vindeckyy@users.noreply.github.com>
-Homepage: https://github.com/vindeckyy/presswork
+Homepage: https://github.com/vindeckyy/yindle
 Depends: $DEB_DEPENDS
 Recommends: cups-client, cups-filters
 Provides: cups, cups-daemon
@@ -104,16 +104,16 @@ chmod 0644 "$DEB/control"
 
 # Generate DEBIAN/conffiles so upgrades preserve operator-modified configs.
 : > "$DEB/conffiles"
-for cf in /etc/cups/cupsd.conf /etc/cups/cups-files.conf /etc/pam.d/cups /etc/logrotate.d/presswork; do
+for cf in /etc/cups/cupsd.conf /etc/cups/cups-files.conf /etc/pam.d/cups /etc/logrotate.d/yindle; do
     if [ -f "$DEB_STAGE$cf" ]; then
         printf '%s\n' "$cf" >> "$DEB/conffiles"
     fi
 done
 chmod 0644 "$DEB/conffiles"
 
-# Build postinst from packaging/debian/presswork.postinst with systemd
+# Build postinst from packaging/debian/yindle.postinst with systemd
 # activation BEFORE exit 0 (never appended after exit 0).
-sed '/^#DEBHELPER#$/d' packaging/debian/presswork.postinst > "$DEB/postinst"
+sed '/^#DEBHELPER#$/d' packaging/debian/yindle.postinst > "$DEB/postinst"
 chmod 0755 "$DEB/postinst"
 
 cat > "$DEB/prerm" <<'EOF'

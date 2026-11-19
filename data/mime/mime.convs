@@ -28,7 +28,7 @@
 #   (job-id, user, title, copies, options, [filename or stdin]) to
 #   work with CUPS.
 #
-#   Presswork ships the scheduler and backends only. Conversion filters
+#   Yindle ships the scheduler and backends only. Conversion filters
 #   such as `pstops`, `rastertopwg`, `pdftopdf`, and `pdftoraster` are
 #   external executables supplied by the OpenPrinting `cups-filters`
 #   package (install `cups-filters` on Linux if you print to non-driverless

@@ -1,11 +1,11 @@
-# Releasing Presswork
+# Releasing Yindle
 
 Releases are tag-driven and gated by automated security, test, per-crate
 coverage, `.deb` integrity, SBOM, and SLSA provenance pipelines. Cutting a
 release once the version bump commit lands on `main` is two commands:
 
 ```sh
-git tag -a vX.Y.Z -m "presswork X.Y.Z"
+git tag -a vX.Y.Z -m "yindle X.Y.Z"
 git push origin vX.Y.Z
 ```
 
@@ -21,21 +21,21 @@ Update **all** of the following files in one clean release-prep commit:
    - `Cargo.toml` — `[workspace.package] version = "X.Y.Z"`
 2. **Internal crates.io dependency version pins** (required for `cargo publish` in dependency order):
    - `crates/cups-log/Cargo.toml` — `ipp-codec = { path = "../ipp-codec", version = "X.Y.Z" }`
-   - `crates/cups-config/Cargo.toml` — `ipp-codec` and `presswork-sys` `version = "X.Y.Z"`
+   - `crates/cups-config/Cargo.toml` — `ipp-codec` and `yindle-sys` `version = "X.Y.Z"`
    - Refresh `Cargo.lock` via `cargo check --workspace` so `--locked` passes cleanly.
 3. **Citation & release notes**:
    - `CITATION.cff` — `version: X.Y.Z` and `date-released: "YYYY-MM-DD"`
    - `CHANGELOG.md` — move `[Unreleased]` entries under `## [X.Y.Z] - YYYY-MM-DD` (exact header format parsed by `release.yml`)
 4. **Distribution packaging manifests**:
-   - `packaging/debian/changelog` — add new `presswork (X.Y.Z-1) unstable` entry
-   - `packaging/rpm/presswork.spec` — bump `Version: X.Y.Z` and add `%changelog` entry
+   - `packaging/debian/changelog` — add new `yindle (X.Y.Z-1) unstable` entry
+   - `packaging/rpm/yindle.spec` — bump `Version: X.Y.Z` and add `%changelog` entry
    - `packaging/alpine/APKBUILD` — bump `pkgver=X.Y.Z` (update `sha512sums` via `abuild checksum` once the tag tarball exists)
    - `packaging/arch/PKGBUILD` & `packaging/aur-bin/PKGBUILD` — bump `pkgver=X.Y.Z` (update `sha256sums` from release `SHA256SUMS` / `updpkgsums`)
    - `packaging/nix/package.nix` — bump `version = "X.Y.Z"` and update `src.hash` (`nix-prefetch-github`) + `cargoHash`
 5. **Container & Kubernetes manifests**:
-   - `deploy/helm/presswork/Chart.yaml` — bump `version: X.Y.Z` and `appVersion: "X.Y.Z"`
+   - `deploy/helm/yindle/Chart.yaml` — bump `version: X.Y.Z` and `appVersion: "X.Y.Z"`
    - `Dockerfile` — bump default `ARG VERSION=X.Y.Z`
-   - `docker-compose.yml` — bump default `ghcr.io/vindeckyy/presswork:X.Y.Z` tag
+   - `docker-compose.yml` — bump default `ghcr.io/vindeckyy/yindle:X.Y.Z` tag
 6. **Documentation examples**:
    - Update version examples in `README.md`, `docs/install.md`, and `docs/migration.md` if referencing a concrete tarball/`.deb`/image tag.
 
@@ -89,7 +89,7 @@ Pushing a `vX.Y.Z` tag triggers two workflows automatically:
    - `x86_64-unknown-linux-gnu` — runs `./scripts/dist.sh` to build the tarball and `.deb`, then runs a strict `.deb` integrity gate (`dpkg-deb -c` verifying zero `/` pollution, `/usr/sbin/cupsd` present, no `0775` umask leaks, valid `DEBIAN/conffiles`, executable syntax-checked `postinst` with no unreachable lines after `exit 0`, no placeholder maintainer addresses).
    - `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` — cross-compiled via `cargo-zigbuild`, staged with `make install-files CHOWN=0`, packaged with deterministic `--owner=0 --group=0` tarballs.
 3. **`sbom` job**:
-   - Generates a validated CycloneDX JSON SBOM (`presswork-X.Y.Z.cdx.json`) across the workspace lockfile using `anchore/sbom-action`.
+   - Generates a validated CycloneDX JSON SBOM (`yindle-X.Y.Z.cdx.json`) across the workspace lockfile using `anchore/sbom-action`.
 4. **`publish-release` job**:
    - Generates a unified `SHA256SUMS` covering all `*.tar.gz`, `*.deb`, and `*.cdx.json` artifacts.
    - Signs **SLSA build provenance** (`actions/attest-build-provenance`) for all tarballs, `.deb` packages, and SBOMs, plus **CycloneDX SBOM attestations** (`actions/attest-sbom`) bound to each package.
@@ -97,14 +97,14 @@ Pushing a `vX.Y.Z` tag triggers two workflows automatically:
 5. **`publish-crates` job (chained `.github/workflows/publish.yml` via `workflow_call`)**:
    - Invoked directly via `workflow_call` after `publish-release` succeeds (avoiding GitHub's `GITHUB_TOKEN` event suppression on `release: [published]`).
    - Publishes the 6 library crates to crates.io in dependency order:
-     `ipp-codec` -> `presswork-sys` -> `backend-common` -> `cups-tls` -> `cups-log` -> `cups-config`,
+     `ipp-codec` -> `yindle-sys` -> `backend-common` -> `cups-tls` -> `cups-log` -> `cups-config`,
      retaining idempotent skip-if-already-uploaded handling and index-propagation retries, using `CARGO_REGISTRY_TOKEN` via environment variable.
    - Can also be run manually via `workflow_dispatch` with `dry_run: true` to test `cargo package` without uploading.
 
 ### `.github/workflows/docker.yml` (Multi-Arch GHCR Container Images)
 
 1. Runs a live container build and HTTP listener smoke test (`cupsd -v`, `cupsd -t`, and live connection check).
-2. Builds and pushes multi-arch images (`linux/amd64`, `linux/arm64`) to `ghcr.io/vindeckyy/presswork` with OCI SBOMs, `provenance: mode=max`, and GitHub Artifact Build Provenance attestations (`actions/attest-build-provenance`).
+2. Builds and pushes multi-arch images (`linux/amd64`, `linux/arm64`) to `ghcr.io/vindeckyy/yindle` with OCI SBOMs, `provenance: mode=max`, and GitHub Artifact Build Provenance attestations (`actions/attest-build-provenance`).
 
 ---
 
@@ -119,14 +119,14 @@ Pushing a `vX.Y.Z` tag triggers two workflows automatically:
 
 - **GitHub Releases**: 4 Linux tarballs (`glibc` + `musl`, `x86_64` + `aarch64`), Debian `.deb`, CycloneDX SBOM, `SHA256SUMS`, and SLSA attestations.
 - **crates.io**: 6 reusable library crates published via chained `publish.yml`.
-- **GHCR (`ghcr.io/vindeckyy/presswork`)**: multi-arch `linux/amd64` + `linux/arm64` images.
-- **Homebrew**: `vindeckyy/homebrew-tap`, `Formula/presswork.rb` — bump `url` and `sha256` to the new release tarball.
-- **AUR**: `packaging/aur-bin/` (`presswork-bin`) and `packaging/arch/` (`presswork`) — update `pkgver` and `sha256sums`, run `updpkgsums` and `makepkg --printsrcinfo`.
+- **GHCR (`ghcr.io/vindeckyy/yindle`)**: multi-arch `linux/amd64` + `linux/arm64` images.
+- **Homebrew**: `vindeckyy/homebrew-tap`, `Formula/yindle.rb` — bump `url` and `sha256` to the new release tarball.
+- **AUR**: `packaging/aur-bin/` (`yindle-bin`) and `packaging/arch/` (`yindle`) — update `pkgver` and `sha256sums`, run `updpkgsums` and `makepkg --printsrcinfo`.
 - **nixpkgs**: `packaging/nix/package.nix` — update `version`, `src.hash`, and `cargoHash`.
 - **Debian / RPM / Alpine**: native source specs under `packaging/{debian,rpm,alpine}/`.
-- **Helm**: chart under `deploy/helm/presswork/`.
+- **Helm**: chart under `deploy/helm/yindle/`.
 
 ### Curated-List Submissions (Eligibility-Gated)
 
-- **awesome-rust**: requires >50 stars or >2,000 crates.io downloads — submit `vindeckyy/presswork` under "System tools" once eligible.
+- **awesome-rust**: requires >50 stars or >2,000 crates.io downloads — submit `vindeckyy/yindle` under "System tools" once eligible.
 - **awesome-selfhosted**: requires the first tagged release (`v0.1.0`, `2026-11-12`) to be 4+ months old (eligible **~2027-03-12**) and a human submitter — entries are YAML files in the `awesome-selfhosted-data` repository.

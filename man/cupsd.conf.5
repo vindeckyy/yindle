@@ -1,6 +1,6 @@
-.TH CUPSD.CONF 5 "2026-11-18" "Presswork 0.1.0" "File Formats"
+.TH CUPSD.CONF 5 "2026-11-18" "yindle 0.1.1" "File Formats"
 .SH NAME
-cupsd.conf \- scheduler configuration file for Presswork cupsd
+cupsd.conf \- scheduler configuration file for Yindle cupsd
 .SH DESCRIPTION
 The
 .I cupsd.conf
@@ -53,7 +53,7 @@ addresses).
 .BI SSLListen " address:port"
 Listen for direct TLS (IPPS/HTTPS from the first byte) on the specified address
 and port.
-Presswork fails closed if an explicit TLS listener cannot initialize its
+Yindle fails closed if an explicit TLS listener cannot initialize its
 certificate/key pair.
 .TP
 .BI SSLPort " number"
@@ -275,9 +275,9 @@ Maximum total filter cost allowed to run concurrently across all jobs (default:
 .BR 0 ,
 unlimited).
 Exposed via Prometheus
-.B presswork_filter_limit
+.B yindle_filter_limit
 and
-.B presswork_filter_cost_current
+.B yindle_filter_cost_current
 metrics.
 .TP
 .BI FilterNice " 0..19"
@@ -412,7 +412,7 @@ blocks plus privacy directives:
 .BR SubscriptionPrivateAccess ,
 and
 .BR SubscriptionPrivateValues .
-In Presswork, operations that do not match any
+In Yindle, operations that do not match any
 .B <Limit>
 (or
 .BR "<Limit All>" )
@@ -466,7 +466,7 @@ host ACL and authentication rules must pass
 or either one suffices
 .RB ( any ).
 .B Security note:
-Presswork intentionally defaults to
+Yindle intentionally defaults to
 .B "Satisfy all"
 (differing from upstream CUPS's
 .B "Satisfy any"

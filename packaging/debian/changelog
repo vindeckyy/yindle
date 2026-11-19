@@ -1,6 +1,6 @@
-presswork (0.1.0-1) unstable; urgency=medium
+yindle (0.1.1-1) unstable; urgency=medium
 
-  * Initial Debian release of Presswork, a memory-safe CUPS-compatible
+  * Initial Debian release of Yindle, a memory-safe CUPS-compatible
     print spooler and IPP scheduler in Rust.
   * Bind cups.socket to loopback by default and harden cups.service with
     RuntimeDirectory, ProtectSystem=strict, and minimal capabilities.

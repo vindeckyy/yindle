@@ -142,7 +142,7 @@ impl DaemonState {
     }
 }
 
-/// Real local hostname via `presswork_sys::gethostname()` (falling back to
+/// Real local hostname via `yindle_sys::gethostname()` (falling back to
 /// `$HOSTNAME`, then `"localhost"`).
 #[must_use]
 pub fn local_hostname() -> String {
@@ -243,11 +243,15 @@ pub fn build_tls_config(opts: &TlsOptions, ssl_dir: &Path) -> io::Result<TlsConf
     let mut tls_cfg = TlsConfig::from_ssl_options_str(&tokens.join(" "))?;
 
     // Optional mTLS client certificate verification when configured via env or `{ssl_dir}/client-ca.pem`.
-    if let Ok(ca_path) = std::env::var("PRESSWORK_MTLS_CA") {
+    if let Ok(ca_path) =
+        std::env::var("YINDLE_MTLS_CA").or_else(|_| std::env::var("PRESSWORK_MTLS_CA"))
+    {
         if !ca_path.trim().is_empty() {
-            let require = std::env::var("PRESSWORK_MTLS_REQUIRE").is_ok_and(|v| {
-                v.eq_ignore_ascii_case("true") || v == "1" || v.eq_ignore_ascii_case("yes")
-            });
+            let require = std::env::var("YINDLE_MTLS_REQUIRE")
+                .or_else(|_| std::env::var("PRESSWORK_MTLS_REQUIRE"))
+                .is_ok_and(|v| {
+                    v.eq_ignore_ascii_case("true") || v == "1" || v.eq_ignore_ascii_case("yes")
+                });
             tls_cfg.client_auth = if require {
                 ClientAuth::RequiredCaFile(PathBuf::from(ca_path))
             } else {
@@ -560,7 +564,7 @@ fn tcp_already_covered(want: SocketAddr, covered: &HashSet<SocketAddr>) -> bool 
 }
 
 /// RAII concurrency guard enforcing `MaxClients`, `MaxClientsPerHost`, and
-/// live `presswork_active_clients` / graceful-drain wakeup.
+/// live `yindle_active_clients` / graceful-drain wakeup.
 pub struct ClientGuard {
     state: Arc<DaemonState>,
     addr: IpAddr,
@@ -1518,7 +1522,7 @@ mod tests {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let p = std::env::temp_dir().join(format!(
-            "presswork-cupsd-srv-{}-{tag}-{id}",
+            "yindle-cupsd-srv-{}-{tag}-{id}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&p);
@@ -1759,7 +1763,7 @@ DefaultAuthType Basic
         assert_eq!(ui.status, StatusCode::OK);
         assert!(String::from_utf8(ui.body)
             .unwrap()
-            .contains("Presswork Print Scheduler"));
+            .contains("Yindle Print Scheduler"));
 
         // 6. Authenticated IPP request logs real username (`admin-user`) in access_log!
         let mut ipp = IppMessage::new(op::CUPS_GET_PRINTERS);
@@ -2089,7 +2093,7 @@ DefaultAuthType Basic
         )
         .await;
         assert!(resp.starts_with("HTTP/1.1 200 OK"), "{resp}");
-        assert!(resp.contains("presswork_active_clients"));
+        assert!(resp.contains("yindle_active_clients"));
 
         // 4. Unix domain socket with SO_PEERCRED.
         let mut us = tokio::net::UnixStream::connect(&sock).await.unwrap();

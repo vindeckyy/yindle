@@ -1,4 +1,4 @@
-# presswork — build, test, coverage-gate, and FHS install targets.
+# yindle — build, test, coverage-gate, and FHS install targets.
 #
 # Standard root install:
 #   make && sudo make install
@@ -12,7 +12,7 @@ BINDIR        ?= $(PREFIX)/bin
 SBINDIR       ?= $(PREFIX)/sbin
 SERVERBIN     ?= $(PREFIX)/lib/cups
 DATADIR       ?= $(PREFIX)/share/cups
-DOCDIR        ?= $(PREFIX)/share/doc/presswork
+DOCDIR        ?= $(PREFIX)/share/doc/yindle
 MANDIR        ?= $(PREFIX)/share/man
 UNITDIR       ?= $(PREFIX)/lib/systemd/system
 TMPFILESDIR   ?= $(PREFIX)/lib/tmpfiles.d
@@ -142,8 +142,8 @@ install-files:
 		for u in $(SYSTEMD_UNITS); do \
 			install -m 0644 "data/systemd/$$u" "$(DESTDIR)$(UNITDIR)/$$u"; \
 		done; \
-		install -m 0644 data/tmpfiles.d/presswork.conf "$(DESTDIR)$(TMPFILESDIR)/presswork.conf"; \
-		install -m 0644 data/sysusers.d/presswork.conf "$(DESTDIR)$(SYSUSERSDIR)/presswork.conf"; \
+		install -m 0644 data/tmpfiles.d/yindle.conf "$(DESTDIR)$(TMPFILESDIR)/yindle.conf"; \
+		install -m 0644 data/sysusers.d/yindle.conf "$(DESTDIR)$(SYSUSERSDIR)/yindle.conf"; \
 	fi
 	# PAM and logrotate configuration (preserve existing live configs).
 	install -d -m 0755 "$(DESTDIR)$(PAMDIR)" "$(DESTDIR)$(LOGROTATEDIR)"
@@ -152,10 +152,10 @@ install-files:
 	else \
 		echo "Preserving existing $(DESTDIR)$(PAMDIR)/cups"; \
 	fi
-	if [ ! -e "$(DESTDIR)$(LOGROTATEDIR)/presswork" ]; then \
-		install -m 0644 data/logrotate.d/presswork "$(DESTDIR)$(LOGROTATEDIR)/presswork"; \
+	if [ ! -e "$(DESTDIR)$(LOGROTATEDIR)/yindle" ]; then \
+		install -m 0644 data/logrotate.d/yindle "$(DESTDIR)$(LOGROTATEDIR)/yindle"; \
 	else \
-		echo "Preserving existing $(DESTDIR)$(LOGROTATEDIR)/presswork"; \
+		echo "Preserving existing $(DESTDIR)$(LOGROTATEDIR)/yindle"; \
 	fi
 	# Man pages (installed automatically when man/ is present).
 	if [ -d man ]; then \
@@ -208,8 +208,8 @@ uninstall:
 	for u in $(SYSTEMD_UNITS); do \
 		rm -f "$(DESTDIR)$(UNITDIR)/$$u"; \
 	done
-	rm -f "$(DESTDIR)$(TMPFILESDIR)/presswork.conf" \
-		"$(DESTDIR)$(SYSUSERSDIR)/presswork.conf"
+	rm -f "$(DESTDIR)$(TMPFILESDIR)/yindle.conf" \
+		"$(DESTDIR)$(SYSUSERSDIR)/yindle.conf"
 	if [ -d man ]; then \
 		for f in man/*.[1-8] man/man[1-8]/*.[1-8]; do \
 			[ -f "$$f" ] || continue; \

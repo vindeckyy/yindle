@@ -1,4 +1,4 @@
-//! `cupsd` — Presswork enterprise CUPS-compatible print scheduler daemon.
+//! `cupsd` — yindle enterprise CUPS-compatible print scheduler daemon.
 //!
 //! Integrates all hardened Wave-1 and Wave-2a workspace crates:
 //! - Event-driven async job scheduler (`scheduler`)
@@ -38,7 +38,9 @@ pub fn run_cli<I>(args: I) -> ExitCode
 where
     I: IntoIterator<Item = OsString>,
 {
-    let env_log_fmt = std::env::var("PRESSWORK_LOG_FORMAT").ok();
+    let env_log_fmt = std::env::var("YINDLE_LOG_FORMAT")
+        .or_else(|_| std::env::var("PRESSWORK_LOG_FORMAT"))
+        .ok();
     let cmd = match parse_args(args, env_log_fmt.as_deref()) {
         Ok(c) => c,
         Err(msg) => {

@@ -1,9 +1,9 @@
-# presswork
+# yindle
 
-[![CI](https://github.com/vindeckyy/presswork/actions/workflows/ci.yml/badge.svg)](https://github.com/vindeckyy/presswork/actions/workflows/ci.yml)
+[![CI](https://github.com/vindeckyy/yindle/actions/workflows/ci.yml/badge.svg)](https://github.com/vindeckyy/yindle/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue)](LICENSE-APACHE)
 [![MSRV](https://img.shields.io/badge/rust-1.88%2B-orange)](Cargo.toml)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/vindeckyy/presswork/badge)](https://scorecard.dev/viewer/?uri=github.com/vindeckyy/presswork)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/vindeckyy/yindle/badge)](https://scorecard.dev/viewer/?uri=github.com/vindeckyy/yindle)
 [![Conformance](https://img.shields.io/badge/upstream%20conformance-34%2F0%2F1-brightgreen)](docs/conformance.md)
 
 A memory-safe, enterprise-hardened **CUPS replacement in Rust**: a drop-in
@@ -65,21 +65,21 @@ lpstat -h 127.0.0.1:8631 -t
 ```
 
 Multi-arch images (`linux/amd64`, `linux/arm64`) are published to
-`ghcr.io/vindeckyy/presswork` with OCI SBOM and SLSA provenance attestations.
+`ghcr.io/vindeckyy/yindle` with OCI SBOM and SLSA provenance attestations.
 
 ### Path 3: Production Native Linux, Package, or Kubernetes
 
 - **Native Linux installer (`x86_64` & `aarch64`, fail-closed `SHA256SUMS`, preserves `/etc/cups`)**:
   ```sh
-  curl -fsSL https://raw.githubusercontent.com/vindeckyy/presswork/main/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/vindeckyy/yindle/main/install.sh | sh
   ```
-- **Debian / Ubuntu `.deb`** (from [GitHub Releases](https://github.com/vindeckyy/presswork/releases), declares `Provides: cups, cups-daemon`, `Recommends: cups-client, cups-filters`, and `DEBIAN/conffiles`):
+- **Debian / Ubuntu `.deb`** (from [GitHub Releases](https://github.com/vindeckyy/yindle/releases), declares `Provides: cups, cups-daemon`, `Recommends: cups-client, cups-filters`, and `DEBIAN/conffiles`):
   ```sh
-  sudo apt-get install -y ./presswork_0.1.0-1_amd64.deb
+  sudo apt-get install -y ./yindle_0.1.1-1_amd64.deb
   ```
-- **Kubernetes / Helm** ([`deploy/helm/presswork/`](deploy/helm/presswork/Chart.yaml)):
+- **Kubernetes / Helm** ([`deploy/helm/yindle/`](deploy/helm/yindle/Chart.yaml)):
   ```sh
-  helm upgrade --install presswork ./deploy/helm/presswork \
+  helm upgrade --install yindle ./deploy/helm/yindle \
     --namespace printing --create-namespace \
     --set serviceMonitor.enabled=true
   ```
@@ -150,7 +150,7 @@ testing and zero-downtime migration from OpenPrinting CUPS.
 
 ## Architecture & Workspace Layout
 
-`presswork` is the project name; installed executables keep the upstream CUPS
+`yindle` is the project name; installed executables keep the upstream CUPS
 names and FHS layout for drop-in compatibility.
 
 ### Library Crates (`crates/` — 17 Crates)
@@ -173,7 +173,7 @@ names and FHS layout for drop-in compatibility.
 | `cups-dbus` | Pure-Rust D-Bus v1 wire publisher for `org.cups.cupsd.Notifier` (graceful no-op when bus absent) |
 | `cups-log` | Thread-safe `TZif` localtime `error_log`/`access_log`/`page_log`, `MaxLogSize` rotation, structured JSON & audit log |
 | `backend-common` | Shared backend argv/exit contract, discovery sanitization, URI credential redaction, `SsrfPolicy`, safe `/dev/` open |
-| `sys` (`presswork-sys`) | Single audited `unsafe` crate: reentrant `*_r` NSS/shadow, dynamic PAM & `crypt_r`, `SO_PEERCRED`, `sd_notify`, privdrop, Landlock |
+| `sys` (`yindle-sys`) | Single audited `unsafe` crate: reentrant `*_r` NSS/shadow, dynamic PAM & `crypt_r`, `SO_PEERCRED`, `sd_notify`, privdrop, Landlock |
 
 ### Executables (`bins/` — 15 Binaries)
 
@@ -242,7 +242,7 @@ reproduced locally via `./scripts/dist.sh`.
 
 ## FAQ
 
-**Can presswork replace `cupsd` on a running Linux system?**
+**Can yindle replace `cupsd` on a running Linux system?**
 Yes. It reads `/etc/cups/*` in place, keeps your queues and spool, installs the
 standard `cups.service` / `cups.socket` / `cups.path` units, and speaks the same
 IPP protocol on `/run/cups/cups.sock` and port `631`. The `.deb` declares
@@ -252,7 +252,7 @@ zero-risk side-by-side shadow test on port `8631` first.
 
 **Do GNOME/KDE print dialogs, `lp`, `lpr`, Firefox, and macOS/iOS clients still work?**
 Yes—they speak IPP/AirPrint to port `631` or `/run/cups/cups.sock`, which is
-unchanged. The upstream `test/5.x` client suite passes 34/34 against Presswork
+unchanged. The upstream `test/5.x` client suite passes 34/34 against Yindle
 using unmodified stock `cups-client` binaries.
 
 **Do I still need `cups-filters`?**
@@ -262,13 +262,13 @@ For legacy PPD printers requiring PostScript/PDF/raster conversion filters
 `cups-filters` package (or pass `--build-arg INSTALL_CUPS_FILTERS=true` in
 Docker).
 
-**Does Presswork work alongside stock CUPS for testing?**
+**Does Yindle work alongside stock CUPS for testing?**
 Yes. Run `./scripts/dev-local.sh --keep`, `docker compose up --build -d` (binds
 `127.0.0.1:8631`), or follow the isolated shadow-test instructions in
 [`docs/migration.md`](docs/migration.md).
 
 **Is this affiliated with OpenPrinting/CUPS?**
-No. Presswork is an independent implementation of the IPP standards and CUPS
+No. Yindle is an independent implementation of the IPP standards and CUPS
 file/process contracts.
 
 ---

@@ -1,15 +1,15 @@
-Source: presswork
+Source: yindle
 Section: net
 Priority: optional
 Maintainer: vindeckyy <35399491+vindeckyy@users.noreply.github.com>
-Homepage: https://github.com/vindeckyy/presswork
-Vcs-Git: https://github.com/vindeckyy/presswork.git
-Vcs-Browser: https://github.com/vindeckyy/presswork
+Homepage: https://github.com/vindeckyy/yindle
+Vcs-Git: https://github.com/vindeckyy/yindle.git
+Vcs-Browser: https://github.com/vindeckyy/yindle
 Build-Depends: debhelper-compat (= 13), cargo, rustc
 Standards-Version: 4.7.0
 Rules-Requires-Root: no
 
-Package: presswork
+Package: yindle
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, adduser
 Recommends: cups-client, cups-filters
@@ -17,7 +17,7 @@ Provides: cups, cups-daemon
 Conflicts: cups, cups-daemon
 Replaces: cups-daemon
 Description: Memory-safe CUPS-compatible print spooler and IPP scheduler
- presswork is a from-scratch reimplementation of the CUPS 2.x print
+ yindle is a from-scratch reimplementation of the CUPS 2.x print
  spooler and IPP scheduler in Rust — driverless IPP first, with a PPD /
  legacy-driver layer for parity. It speaks the same IPP on the same
  sockets, reads /etc/cups config in place, and keeps the same

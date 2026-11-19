@@ -1,3 +1,7 @@
+> Note: this project was renamed from presswork to yindle in November
+> 2026. The rest of this document is the original 0.1.0 announcement,
+> kept as published. See CHANGELOG for the rename note.
+
 # presswork 0.1.0: a memory-safe CUPS replacement in Rust
 
 Today we are releasing **presswork 0.1.0**, a drop-in replacement for
@@ -43,11 +47,11 @@ forbidden workspace-wide outside a single audited FFI crate.
 ## Try it in one command
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/vindeckyy/presswork/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vindeckyy/yindle/main/install.sh | sh
 ```
 
 Or grab the `.deb` or tarball from the
-[v0.1.0 release](https://github.com/vindeckyy/presswork/releases/tag/v0.1.0),
+[v0.1.0 release](https://github.com/vindeckyy/yindle/releases/tag/v0.1.0),
 or evaluate in user space on port 8631 via
 `brew install vindeckyy/tap/presswork`.
 
@@ -62,4 +66,4 @@ web admin surface to replace the CGI layer.
 presswork is Apache-2.0 OR MIT, independently implemented, and not
 affiliated with OpenPrinting. Bug reports and compatibility
 divergences are welcome on the
-[issue tracker](https://github.com/vindeckyy/presswork/issues).
+[issue tracker](https://github.com/vindeckyy/yindle/issues).

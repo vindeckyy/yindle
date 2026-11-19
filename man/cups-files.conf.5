@@ -1,6 +1,6 @@
-.TH CUPS-FILES.CONF 5 "2026-11-18" "Presswork 0.1.0" "File Formats"
+.TH CUPS-FILES.CONF 5 "2026-11-18" "yindle 0.1.1" "File Formats"
 .SH NAME
-cups\-files.conf \- file, directory, privilege, and sandboxing configuration for Presswork cupsd
+cups\-files.conf \- file, directory, privilege, and sandboxing configuration for Yindle cupsd
 .SH DESCRIPTION
 The
 .I cups\-files.conf
@@ -30,7 +30,7 @@ and
 Unprivileged user account under which filters, backends, and helper processes
 execute (shipped default:
 .BR lp ).
-Presswork flags UID 0 as
+Yindle flags UID 0 as
 .B ROOT_WORKER_USER
 and refuses to run filters as root.
 .TP
@@ -227,7 +227,7 @@ are absent (default:
 Set
 .B No
 when deploying CA-managed certificates.
-Presswork never overwrites existing certificates on parse error.
+Yindle never overwrites existing certificates on parse error.
 .TP
 .BI PassEnv " var [var ...]"
 Allowlist of environment variables forwarded from

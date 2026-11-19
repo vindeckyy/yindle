@@ -20,7 +20,7 @@ use crate::{Config, Paths};
 /// Classification of one directive encountered in `cupsd.conf` or `cups-files.conf`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirectiveStatus {
-    /// Recognized and active in Presswork.
+    /// Recognized and active in Yindle.
     Supported,
     /// Recognized for compatibility, but deprecated upstream.
     Deprecated,

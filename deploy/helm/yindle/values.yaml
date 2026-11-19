@@ -1,4 +1,4 @@
-# Default values for Presswork Helm chart.
+# Default values for Yindle Helm chart.
 # Override for production deployments with `helm upgrade --install -f custom-values.yaml`.
 
 # StatefulSet replica count. Keep at 1 per queue group unless sharding queues
@@ -6,7 +6,7 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/vindeckyy/presswork
+  repository: ghcr.io/vindeckyy/yindle
   pullPolicy: IfNotPresent
   # Overrides the image tag (defaults to Chart.appVersion when empty).
   tag: ""
@@ -17,7 +17,7 @@ fullnameOverride: ""
 
 serviceAccount:
   create: true
-  # Presswork does not talk to the Kubernetes API.
+  # Yindle does not talk to the Kubernetes API.
   automount: false
   annotations: {}
   name: ""
@@ -56,7 +56,7 @@ service:
   nodePort: null
   annotations: {}
 
-# Health and readiness probes against Presswork's HTTP endpoints.
+# Health and readiness probes against Yindle's HTTP endpoints.
 probes:
   liveness:
     enabled: true

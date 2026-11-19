@@ -145,7 +145,7 @@ printf 'args=%s,%s printer=%s bashenv=%s nnp=%s umask=%s\n' \
     // 6. Executable with nonexistent interpreter passes all sandbox setup (nice, umask,
     //    rlimits, no_new_privs, Landlock) and fails cleanly at execv with exit 1.
     let bad_interp = dir.join("bad_interp.sh");
-    fs::write(&bad_interp, "#!/nonexistent/presswork-interp-xyz\n").expect("write");
+    fs::write(&bad_interp, "#!/nonexistent/yindle-interp-xyz\n").expect("write");
     fs::set_permissions(&bad_interp, fs::Permissions::from_mode(0o755)).expect("chmod");
     let bad_exec = Command::new(bin)
         .args(["strict", "-", "-", "0", bad_interp.to_str().expect("str")])

@@ -1,6 +1,6 @@
 # Enterprise Operations & SRE Runbook
 
-This manual covers production deployment, observability, zero-downtime lifecycle operations, MAC (AppArmor/SELinux) coexistence, high availability, backups, and incident troubleshooting for Presswork (`cupsd`).
+This manual covers production deployment, observability, zero-downtime lifecycle operations, MAC (AppArmor/SELinux) coexistence, high availability, backups, and incident troubleshooting for Yindle (`cupsd`).
 
 **Contents**:
 [1. Production Deployment Patterns](#1-production-deployment-patterns) ·
@@ -16,13 +16,13 @@ This manual covers production deployment, observability, zero-downtime lifecycle
 
 ### systemd (Bare Metal / VM)
 
-Presswork ships hardened systemd units in `data/systemd/`, along with `data/tmpfiles.d/presswork.conf`, `data/sysusers.d/presswork.conf`, and `data/logrotate.d/presswork`:
+Yindle ships hardened systemd units in `data/systemd/`, along with `data/tmpfiles.d/yindle.conf`, `data/sysusers.d/yindle.conf`, and `data/logrotate.d/yindle`:
 
 - **Activation model**: `cups.socket` (loopback `127.0.0.1:631`, `[::1]:631`, and `/run/cups/cups.sock`) + `cups.path` (watches `/var/spool/cups/d*` for queued jobs) start `cups.service` (`ExecStart=/usr/sbin/cupsd -l`, `Restart=on-failure`, `ExecReload=/bin/kill -HUP $MAINPID`).
-- **Tmpfs boot safety**: `cups.service` sets `RuntimeDirectory=cups` (`0755`) and `presswork.conf` in `/usr/lib/tmpfiles.d/` creates `/run/cups`, `/run/cups/certs`, `/var/spool/cups`, `/var/log/cups`, `/var/cache/cups`, and enforces `0700 root:root` on `/etc/cups/ssl` (preventing `226/NAMESPACE` boot failures on tmpfs `/run`).
-- **System accounts**: `/usr/lib/sysusers.d/presswork.conf` creates `lp` (user + group) and `lpadmin` (admin group). **`lp` is intentionally NOT added to `lpadmin`** so sandboxed filters/backends cannot gain `@SYSTEM` admin privileges.
+- **Tmpfs boot safety**: `cups.service` sets `RuntimeDirectory=cups` (`0755`) and `yindle.conf` in `/usr/lib/tmpfiles.d/` creates `/run/cups`, `/run/cups/certs`, `/var/spool/cups`, `/var/log/cups`, `/var/cache/cups`, and enforces `0700 root:root` on `/etc/cups/ssl` (preventing `226/NAMESPACE` boot failures on tmpfs `/run`).
+- **System accounts**: `/usr/lib/sysusers.d/yindle.conf` creates `lp` (user + group) and `lpadmin` (admin group). **`lp` is intentionally NOT added to `lpadmin`** so sandboxed filters/backends cannot gain `@SYSTEM` admin privileges.
 - **Unit sandboxing**: `ProtectSystem=strict` (writable only on `/var/spool/cups`, `/var/cache/cups`, `/var/log/cups`, `/etc/cups`), `ProtectHome=true`, `PrivateTmp=true`, `NoNewPrivileges=true`, `RestrictNamespaces=true`, minimal `CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER`, `SystemCallFilter=@system-service`, `UMask=0027`, `MemoryMax=512M`, `TasksMax=256`.
-- **Log rotation**: `/etc/logrotate.d/presswork` rotates `access_log`, `error_log`, and `page_log` weekly (`0640 lp lp`, 12 rotations, compressed) and issues `systemctl reload-or-try-restart cups.service` (`SIGHUP`) to reopen log file descriptors cleanly.
+- **Log rotation**: `/etc/logrotate.d/yindle` rotates `access_log`, `error_log`, and `page_log` weekly (`0640 lp lp`, 12 rotations, compressed) and issues `systemctl reload-or-try-restart cups.service` (`SIGHUP`) to reopen log file descriptors cleanly.
 
 #### Exposing IPP to a LAN (Opt-In)
 
@@ -100,25 +100,25 @@ For production builds, pin base image digests via `--build-arg RUST_IMAGE=...` a
 
 ---
 
-### Kubernetes & Helm (`deploy/helm/presswork/`)
+### Kubernetes & Helm (`deploy/helm/yindle/`)
 
-Presswork ships a Helm v2 chart at [`deploy/helm/presswork/`](../deploy/helm/presswork/Chart.yaml) modeled as a **StatefulSet** with persistent volumes, least-privilege security contexts, probes, `NetworkPolicy`, and Prometheus Operator `ServiceMonitor` support.
+Yindle ships a Helm v2 chart at [`deploy/helm/yindle/`](../deploy/helm/yindle/Chart.yaml) modeled as a **StatefulSet** with persistent volumes, least-privilege security contexts, probes, `NetworkPolicy`, and Prometheus Operator `ServiceMonitor` support.
 
 ```sh
 # Install or upgrade into a dedicated namespace
-helm upgrade --install presswork ./deploy/helm/presswork \
+helm upgrade --install yindle ./deploy/helm/yindle \
   --namespace printing --create-namespace \
   --set serviceMonitor.enabled=true \
   --set 'networkPolicy.egress.printerCidrs={10.20.0.0/16}'
 
 # Verify rollout and test via port-forward
-kubectl -n printing rollout status statefulset/presswork
-kubectl -n printing port-forward svc/presswork 8631:631 &
+kubectl -n printing rollout status statefulset/yindle
+kubectl -n printing port-forward svc/yindle 8631:631 &
 curl -fsS http://127.0.0.1:8631/healthz
 curl -fsS http://127.0.0.1:8631/metrics
 ```
 
-Key chart defaults in [`deploy/helm/presswork/values.yaml`](../deploy/helm/presswork/values.yaml):
+Key chart defaults in [`deploy/helm/yindle/values.yaml`](../deploy/helm/yindle/values.yaml):
 
 | Setting | Default | Notes |
 |---|---|---|
@@ -151,28 +151,28 @@ The metric names and labels exported by `GET /metrics` match [`deploy/monitoring
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `presswork_jobs_active` | Gauge | `printer` | Currently processing jobs per printer queue. |
-| `presswork_jobs_pending` | Gauge | `printer` | Pending/queued jobs per printer queue. |
-| `presswork_jobs_total` | Counter | `state` | Cumulative jobs transitioned to terminal states (`completed`, `aborted`, `canceled`, `canceled-at-device`). |
-| `presswork_job_duration_seconds` | Histogram | — | End-to-end job processing duration (`_bucket`, `_sum`, `_count`) for p50/p95/p99 latency SLOs. |
-| `presswork_ipp_requests_total` | Counter | `operation`, `status` | IPP requests dispatched by operation name and IPP status code (e.g. `successful-ok`). |
-| `presswork_auth_failures_total` | Counter | `reason` | Authentication/authorization rejections by failure reason. |
-| `presswork_active_clients` | Gauge | — | Current active HTTP/IPP client connections. |
-| `presswork_filter_cost_current` | Gauge | — | Current active filter pipeline cost units in flight. |
-| `presswork_filter_limit` | Gauge | — | Configured `FilterLimit` budget (`0` = unlimited). |
+| `yindle_jobs_active` | Gauge | `printer` | Currently processing jobs per printer queue. |
+| `yindle_jobs_pending` | Gauge | `printer` | Pending/queued jobs per printer queue. |
+| `yindle_jobs_total` | Counter | `state` | Cumulative jobs transitioned to terminal states (`completed`, `aborted`, `canceled`, `canceled-at-device`). |
+| `yindle_job_duration_seconds` | Histogram | — | End-to-end job processing duration (`_bucket`, `_sum`, `_count`) for p50/p95/p99 latency SLOs. |
+| `yindle_ipp_requests_total` | Counter | `operation`, `status` | IPP requests dispatched by operation name and IPP status code (e.g. `successful-ok`). |
+| `yindle_auth_failures_total` | Counter | `reason` | Authentication/authorization rejections by failure reason. |
+| `yindle_active_clients` | Gauge | — | Current active HTTP/IPP client connections. |
+| `yindle_filter_cost_current` | Gauge | — | Current active filter pipeline cost units in flight. |
+| `yindle_filter_limit` | Gauge | — | Configured `FilterLimit` budget (`0` = unlimited). |
 
 ### Prometheus Alerts & Grafana Dashboard
 
 1. **Prometheus Operator alerts**: apply [`deploy/monitoring/prometheus-alerts.yaml`](../deploy/monitoring/prometheus-alerts.yaml) (`kubectl apply -f deploy/monitoring/prometheus-alerts.yaml`). It defines 6 production alerts (`CupsdDown`, `PrintQueueBacklog`, `HighJobFailureRate`, `FilterLimitSaturated`, `HighAuthFailures`, `SpoolDiskUsage`), each linked directly to its runbook section below.
-2. **Grafana dashboard**: import [`deploy/monitoring/grafana-dashboard.json`](../deploy/monitoring/grafana-dashboard.json) (UID `presswork-overview`, Grafana 10+, 11 panels covering scheduler status, active jobs, queue depth, p50/p95/p99 job duration, active clients, IPP request/error rates, auth failures, `FilterLimit` saturation, and spool volume utilization).
+2. **Grafana dashboard**: import [`deploy/monitoring/grafana-dashboard.json`](../deploy/monitoring/grafana-dashboard.json) (UID `yindle-overview`, Grafana 10+, 11 panels covering scheduler status, active jobs, queue depth, p50/p95/p99 job duration, active clients, IPP request/error rates, auth failures, `FilterLimit` saturation, and spool volume utilization).
 
 ### Structured JSON Logging, Audit Log & Page Accounting
 
-- **Structured JSON mode**: launch `cupsd --log-format json` or set `PRESSWORK_LOG_FORMAT=json` in the environment (for example via `systemctl edit cups.service` or Helm `extraEnv`) to emit newline-delimited JSON records to `error_log`, `access_log`, `page_log`, and audit streams for direct ingestion into Loki, Elasticsearch, Splunk, or CloudWatch.
+- **Structured JSON mode**: launch `cupsd --log-format json` or set `YINDLE_LOG_FORMAT=json` in the environment (for example via `systemctl edit cups.service` or Helm `extraEnv`) to emit newline-delimited JSON records to `error_log`, `access_log`, `page_log`, and audit streams for direct ingestion into Loki, Elasticsearch, Splunk, or CloudWatch.
 - **Classic CUPS text mode (default)**: preserves exact upstream `error_log`, `access_log` (recording the authenticated username, IPP operation, and status), and `page_log` formats with thread-safe pure-Rust `TZif` localtime formatting and CRLF log-forging sanitization.
 - **Enterprise audit events**: security-sensitive actions—authentication failures, printer/class creation/modification/deletion, policy/config reloads, and job cancellations—are emitted as structured audit events (`who`, `action`, `target`, `source_host`, `outcome`).
 - **Page accounting (`page_log`)**: updated live from filter/backend `PAGE:` status lines on stderr using `PageLogFormat` (default `%p %u %j %T %P %C %{job-billing} %{job-originating-host-name} %{job-name} %{media} %{sides}`).
-- **Log rotation**: set `MaxLogSize 0` in `cupsd.conf` when delegating rotation to `logrotate` (`/etc/logrotate.d/presswork`), or set a byte cap (e.g. `MaxLogSize 10m`) to use Presswork's built-in atomic `.O` rotation.
+- **Log rotation**: set `MaxLogSize 0` in `cupsd.conf` when delegating rotation to `logrotate` (`/etc/logrotate.d/yindle`), or set a byte cap (e.g. `MaxLogSize 10m`) to use Yindle's built-in atomic `.O` rotation.
 
 ---
 
@@ -184,7 +184,7 @@ Sending `SIGHUP` (or running `sudo systemctl reload cups.service`) performs an a
 
 1. Emits `sd_notify("RELOADING=1")` to systemd.
 2. Re-parses `cupsd.conf` and `cups-files.conf` and reloads the MIME database (`DataDir/mime` + `ServerRoot`).
-3. Reloads TLS certificates and private keys from `ServerKeychain` (`/etc/cups/ssl`) atomically via `ReloadableTls`—if the new cert/key pair is malformed or mismatched, Presswork logs an error and **retains the previous valid TLS config** instead of crashing or dropping TLS.
+3. Reloads TLS certificates and private keys from `ServerKeychain` (`/etc/cups/ssl`) atomically via `ReloadableTls`—if the new cert/key pair is malformed or mismatched, Yindle logs an error and **retains the previous valid TLS config** instead of crashing or dropping TLS.
 4. Reopens `error_log`, `access_log`, and `page_log` descriptors (`logrotate` integration).
 5. Refreshes DNS-SD service advertisements.
 6. Emits `sd_notify("READY=1")`.
@@ -275,14 +275,14 @@ sudo cupsd doctor -c /etc/cups/cupsd.conf -s /etc/cups/cups-files.conf --json
 
 ### Ubuntu / Debian AppArmor (`/etc/apparmor.d/usr.sbin.cupsd`)
 
-Stock Debian and Ubuntu `cups-daemon` packages install an AppArmor profile at `/etc/apparmor.d/usr.sbin.cupsd` attached to path `/usr/sbin/cupsd`. Because Presswork installs to `/usr/sbin/cupsd` for drop-in compatibility, **a leftover stock CUPS AppArmor profile can silently confine Presswork** and block `dlopen` of `libpam.so.0` / `libcrypt.so.2`, `/proc/self/status` reads, or Landlock syscalls in `cups-exec`.
+Stock Debian and Ubuntu `cups-daemon` packages install an AppArmor profile at `/etc/apparmor.d/usr.sbin.cupsd` attached to path `/usr/sbin/cupsd`. Because Yindle installs to `/usr/sbin/cupsd` for drop-in compatibility, **a leftover stock CUPS AppArmor profile can silently confine Yindle** and block `dlopen` of `libpam.so.0` / `libcrypt.so.2`, `/proc/self/status` reads, or Landlock syscalls in `cups-exec`.
 
 1. **Check whether a stock profile is loaded**:
    ```sh
    sudo aa-status | grep -i cups || true
    sudo dmesg -T | grep -iE 'apparmor.*DENIED.*cupsd' | tail -n 20
    ```
-2. **Option A — Disable the stock CUPS AppArmor profile** (recommended when relying on Presswork's built-in systemd hardening + `cups-exec` Landlock sandboxing):
+2. **Option A — Disable the stock CUPS AppArmor profile** (recommended when relying on Yindle's built-in systemd hardening + `cups-exec` Landlock sandboxing):
    ```sh
    sudo apt-get install -y apparmor-utils   # if aa-disable is not installed
    sudo aa-disable /etc/apparmor.d/usr.sbin.cupsd
@@ -299,10 +299,10 @@ Stock Debian and Ubuntu `cups-daemon` packages install an AppArmor profile at `/
 
 ### RHEL / Fedora / Rocky / AlmaLinux SELinux
 
-On SELinux enforcing systems, ensure Presswork binaries and state directories carry the standard `cupsd_exec_t` / `cupsd_etc_t` / `cupsd_var_run_t` / `print_spool_t` contexts:
+On SELinux enforcing systems, ensure Yindle binaries and state directories carry the standard `cupsd_exec_t` / `cupsd_etc_t` / `cupsd_var_run_t` / `print_spool_t` contexts:
 
 ```sh
-# Restore default CUPS file contexts after installing Presswork
+# Restore default CUPS file contexts after installing Yindle
 sudo restorecon -Rv \
   /usr/sbin/cupsd \
   /usr/bin/cupsfilter \
@@ -318,7 +318,7 @@ sudo ausearch -m avc -ts recent -c cupsd
 ```
 
 - If running on a non-standard port (e.g. `8631`), label the port: `sudo semanage port -a -t ipp_port_t -p tcp 8631`.
-- If custom enterprise filters or Landlock calls trigger an AVC denial, inspect with `audit2why` and generate a tightly scoped local policy module via `audit2allow -M presswork-local`.
+- If custom enterprise filters or Landlock calls trigger an AVC denial, inspect with `audit2why` and generate a tightly scoped local policy module via `audit2allow -M yindle-local`.
 
 ---
 
@@ -334,7 +334,7 @@ Use one of two proven production HA patterns:
    - **Kubernetes**: deploy the Helm StatefulSet with `replicaCount: 1` and a `ReadWriteOnce` PVC backed by replicated storage (e.g., Ceph/Rook, EBS, Persistent Disk, Longhorn). Kubernetes reschedules the pod onto a healthy node automatically; `Jobs::load_all_with_policy` recovers any job interrupted mid-flight without wedging queues.
    - **Bare Metal / VM**: pair two nodes with Pacemaker/Corosync or Keepalived VIP + replicated block storage (DRBD or SAN LUN with STONITH fencing) mounting `/etc/cups` and `/var/spool/cups` exclusively on the active node.
 2. **Horizontal Queue Sharding (Active-Active by Site/Floor)**
-   - Partition printers by office, floor, or workload class across independent Presswork StatefulSets/VMs (e.g., `print-nyc`, `print-lon`, `print-warehouse`), each with its own PVC/spool and DNS name. Clients target their regional endpoint directly or through an IPP-aware L7 proxy.
+   - Partition printers by office, floor, or workload class across independent Yindle StatefulSets/VMs (e.g., `print-nyc`, `print-lon`, `print-warehouse`), each with its own PVC/spool and DNS name. Clients target their regional endpoint directly or through an IPP-aware L7 proxy.
 
 ### Backup & Restore
 
@@ -350,12 +350,12 @@ Use one of two proven production HA patterns:
 
 ```sh
 # Quiesce or snapshot config (zero-downtime config backup)
-sudo tar --numeric-owner --xattrs -czf "presswork-etc-$(date +%F).tar.gz" \
+sudo tar --numeric-owner --xattrs -czf "yindle-etc-$(date +%F).tar.gz" \
   /etc/cups
 
 # Full backup including active spool (stop scheduler briefly for consistency)
 sudo systemctl stop cups.path cups.socket cups.service
-sudo tar --numeric-owner --xattrs -czf "presswork-full-$(date +%F).tar.gz" \
+sudo tar --numeric-owner --xattrs -czf "yindle-full-$(date +%F).tar.gz" \
   /etc/cups /var/spool/cups
 sudo systemctl start cups.socket cups.path
 ```
@@ -364,7 +364,7 @@ sudo systemctl start cups.socket cups.path
 
 ```sh
 sudo systemctl stop cups.path cups.socket cups.service
-sudo tar --numeric-owner --xattrs -xzf presswork-etc-YYYY-MM-DD.tar.gz -C /
+sudo tar --numeric-owner --xattrs -xzf yindle-etc-YYYY-MM-DD.tar.gz -C /
 sudo chmod 0700 /etc/cups/ssl
 sudo chmod 0600 /etc/cups/ssl/server.key 2>/dev/null || true
 sudo chown -R lp:lp /var/spool/cups /var/log/cups /var/cache/cups
@@ -381,11 +381,11 @@ The first six sections correspond 1-to-1 with the `runbook_url` anchors in [`dep
 
 ### Cupsd Down
 
-**Alert**: `CupsdDown` (`up{job=~".*presswork.*"} == 0` for 2m)
+**Alert**: `CupsdDown` (`up{job=~".*yindle.*"} == 0` for 2m)
 
 1. **Check service/pod status**:
    - systemd: `sudo systemctl status cups.socket cups.service` and `sudo journalctl -u cups.service -n 100 --no-pager`
-   - Kubernetes: `kubectl -n printing describe pod presswork-0` and `kubectl -n printing logs presswork-0 --previous`
+   - Kubernetes: `kubectl -n printing describe pod yindle-0` and `kubectl -n printing logs yindle-0 --previous`
 2. **Validate configuration & host health**:
    ```sh
    sudo cupsd --check-config
@@ -393,14 +393,14 @@ The first six sections correspond 1-to-1 with the `runbook_url` anchors in [`dep
    ```
 3. **Check common root causes**:
    - Port `631` conflict with a leftover process: `sudo ss -tlnp 'sport = :631'`
-   - Missing `/run/cups` on tmpfs boot: `sudo systemd-tmpfiles --create presswork.conf`
-   - Invalid TLS cert/key on an explicit `SSLListen`/`SSLPort` (Presswork fails closed rather than silently falling back to plaintext): inspect `/var/log/cups/error_log` and verify `/etc/cups/ssl/server.{crt,key}` permissions (`0700` dir, `0600` key).
+   - Missing `/run/cups` on tmpfs boot: `sudo systemd-tmpfiles --create yindle.conf`
+   - Invalid TLS cert/key on an explicit `SSLListen`/`SSLPort` (Yindle fails closed rather than silently falling back to plaintext): inspect `/var/log/cups/error_log` and verify `/etc/cups/ssl/server.{crt,key}` permissions (`0700` dir, `0600` key).
    - Stock Ubuntu/Debian AppArmor denial: see [AppArmor & SELinux Migration Notes](#4-apparmor--selinux-migration-notes).
 4. **Recover**: fix the reported error, verify with `cupsd -t`, and run `sudo systemctl restart cups.socket cups.service`.
 
 ### Print Queue Backlog
 
-**Alert**: `PrintQueueBacklog` (`presswork_jobs_pending > 50` for 10m)
+**Alert**: `PrintQueueBacklog` (`yindle_jobs_pending > 50` for 10m)
 
 1. **Inspect queue state and reasons**:
    ```sh
@@ -417,7 +417,7 @@ The first six sections correspond 1-to-1 with the `runbook_url` anchors in [`dep
 3. **Check backend connectivity & retries**:
    - Inspect `/var/log/cups/error_log` for `CUPS_BACKEND_RETRY`, connection timeouts, or `ErrorPolicy stop-printer` transitions.
    - Test reachability to the printer IP/port (TCP 631 for IPP, 9100 for socket, 515 for LPD).
-4. **Check `FilterLimit` throttling**: if `presswork_filter_cost_current` is near `presswork_filter_limit`, see [Filter Limit Saturated](#filter-limit-saturated).
+4. **Check `FilterLimit` throttling**: if `yindle_filter_cost_current` is near `yindle_filter_limit`, see [Filter Limit Saturated](#filter-limit-saturated).
 
 ### High Job Failure Rate
 
@@ -434,7 +434,7 @@ The first six sections correspond 1-to-1 with the `runbook_url` anchors in [`dep
 
 ### Filter Limit Saturated
 
-**Alert**: `FilterLimitSaturated` (`presswork_filter_cost_current / presswork_filter_limit > 0.90` for 5m)
+**Alert**: `FilterLimitSaturated` (`yindle_filter_cost_current / yindle_filter_limit > 0.90` for 5m)
 
 1. **Identify long-running filter processes**:
    ```sh
@@ -447,7 +447,7 @@ The first six sections correspond 1-to-1 with the `runbook_url` anchors in [`dep
 
 ### High Auth Failures
 
-**Alert**: `HighAuthFailures` (`rate(presswork_auth_failures_total[5m]) > 5` for 5m)
+**Alert**: `HighAuthFailures` (`rate(yindle_auth_failures_total[5m]) > 5` for 5m)
 
 1. **Inspect audit & access logs** to distinguish an attack from a misconfigured client or directory outage:
    ```sh
@@ -480,7 +480,7 @@ The first six sections correspond 1-to-1 with the `runbook_url` anchors in [`dep
 
 #### Auth `401` / `403` / `426` Errors After Migrating from Stock CUPS
 
-- **`401 Unauthorized` / `403 Forbidden` on admin or job ops**: Presswork defaults to `Satisfy all` (requiring **both** host ACL match AND valid credentials/group membership). If a legacy `<Location>` or `<Policy>` block expects anonymous local access without `Require`, remove the `Require` line; if it requires admin access, ensure the user is in `SystemGroup` (`lpadmin`) or connects locally over `/run/cups/cups.sock` (`SO_PEERCRED`). Note that Presswork never falls back to `SO_PEERCRED` if a client sends an invalid `Authorization` header.
+- **`401 Unauthorized` / `403 Forbidden` on admin or job ops**: Yindle defaults to `Satisfy all` (requiring **both** host ACL match AND valid credentials/group membership). If a legacy `<Location>` or `<Policy>` block expects anonymous local access without `Require`, remove the `Require` line; if it requires admin access, ensure the user is in `SystemGroup` (`lpadmin`) or connects locally over `/run/cups/cups.sock` (`SO_PEERCRED`). Note that Yindle never falls back to `SO_PEERCRED` if a client sends an invalid `Authorization` header.
 - **`426 Upgrade Required`**: the matching `<Location>` sets `Encryption Required` and the client connected over plaintext HTTP. Reconnect over `ipps://` / `https://` or allow RFC 2817 Upgrade.
 - **`400 Bad Request` on valid IPP clients using a CNAME/VIP**: add the VIP or DNS alias to `ServerAlias` in `/etc/cups/cupsd.conf` (avoid `ServerAlias *` as it weakens DNS rebinding protection) and reload via `SIGHUP`.
 
@@ -493,7 +493,7 @@ The first six sections correspond 1-to-1 with the `runbook_url` anchors in [`dep
 
 #### Backend SSRF Blocks (`ssrf: ... is blocked`)
 
-Presswork's network backends (`ipp`, `lpd`, `socket`, `snmp`, `dnssd`) enforce `SsrfPolicy` to prevent Server-Side Request Forgery against cloud metadata services (`169.254.169.254`, `100.100.100.200`, `fd00:ec2::254`), link-local addresses (`fe80::/10`), multicast/broadcast, and loopback (`127.0.0.0/8`, `::1`).
+Yindle's network backends (`ipp`, `lpd`, `socket`, `snmp`, `dnssd`) enforce `SsrfPolicy` to prevent Server-Side Request Forgery against cloud metadata services (`169.254.169.254`, `100.100.100.200`, `fd00:ec2::254`), link-local addresses (`fe80::/10`), multicast/broadcast, and loopback (`127.0.0.0/8`, `::1`).
 
 - **Legitimate local print gateway / SSH tunnel / test server on `127.0.0.1` or `::1`**: explicitly opt in by passing `CUPS_ALLOW_LOOPBACK_BACKENDS=yes` via `SetEnv CUPS_ALLOW_LOOPBACK_BACKENDS yes` in `/etc/cups/cups-files.conf` (or in the systemd unit / container environment).
 - **Cloud metadata / link-local targets**: always blocked by design and cannot be bypassed via IPv4-mapped IPv6 or DNS rebinding.

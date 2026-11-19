@@ -16,10 +16,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_cupsd");
 fn tmp_dir(tag: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    let p = std::env::temp_dir().join(format!(
-        "presswork-cupsd-it-{}-{tag}-{id}",
-        std::process::id()
-    ));
+    let p = std::env::temp_dir().join(format!("yindle-cupsd-it-{}-{tag}-{id}", std::process::id()));
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).unwrap();
     p
@@ -261,7 +258,7 @@ fn live_daemon_sd_notify_sighup_reload_and_sigterm_shutdown() {
     assert!(wd.iter().any(|m| m.contains("WATCHDOG=1")), "{wd:?}");
 
     let metrics = http_get(addr, "/metrics").unwrap();
-    assert!(metrics.contains("presswork_filter_limit 100"), "{metrics}");
+    assert!(metrics.contains("yindle_filter_limit 100"), "{metrics}");
 
     // Unix socket listener answers too.
     let mut us = UnixStream::connect(&t.sock).unwrap();
@@ -285,7 +282,7 @@ fn live_daemon_sd_notify_sighup_reload_and_sigterm_shutdown() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let m = http_get(addr, "/metrics").unwrap_or_default();
-        if m.contains("presswork_filter_limit 250") {
+        if m.contains("yindle_filter_limit 250") {
             break;
         }
         assert!(Instant::now() < deadline, "reload not applied: {m}");
@@ -338,7 +335,7 @@ fn sigint_shutdown_on_demand_idle_exit_and_fail_closed_startup() {
             "-s",
             t.files_conf.to_str().unwrap(),
         ])
-        .env("PRESSWORK_LOG_FORMAT", "json")
+        .env("YINDLE_LOG_FORMAT", "json")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

@@ -1,16 +1,16 @@
-Presswork has been deployed to namespace "{{ .Release.Namespace }}".
+Yindle has been deployed to namespace "{{ .Release.Namespace }}".
 
 1. Verify pod readiness and health:
-   kubectl -n {{ .Release.Namespace }} rollout status statefulset/{{ include "presswork.fullname" . }}
+   kubectl -n {{ .Release.Namespace }} rollout status statefulset/{{ include "yindle.fullname" . }}
 
 2. Test IPP and health endpoints locally via port-forward:
-   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "presswork.fullname" . }} 8631:{{ .Values.service.port }}
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "yindle.fullname" . }} 8631:{{ .Values.service.port }}
    curl -fsS http://127.0.0.1:8631/healthz
    curl -fsS http://127.0.0.1:8631/readyz
    lpstat -h 127.0.0.1:8631 -t
 
 3. Cluster-internal IPP endpoint:
-   ipp://{{ include "presswork.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}/
+   ipp://{{ include "yindle.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}/
 
 4. Observability:
 {{- if .Values.serviceMonitor.enabled }}

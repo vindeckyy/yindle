@@ -1,4 +1,4 @@
-# presswork runtime user and administration group — systemd-sysusers(8).
+# yindle runtime user and administration group — systemd-sysusers(8).
 # `lp` is intentionally NOT added to `lpadmin` so unprivileged filters and
 # backends cannot gain @SYSTEM admin privileges via SO_PEERCRED.
 g lp -

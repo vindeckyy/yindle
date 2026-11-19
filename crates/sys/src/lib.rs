@@ -593,7 +593,7 @@ mod tests {
         let too_long = format!("/{}", "a".repeat(200));
         assert!(sd_notify_to_socket(&too_long, "READY=1").is_err());
         // Unbound abstract socket exercises the abstract path builder and fails with ECONNREFUSED.
-        let abstract_name = format!("@presswork-nonexistent-test-{}", std::process::id());
+        let abstract_name = format!("@yindle-nonexistent-test-{}", std::process::id());
         assert!(sd_notify_to_socket(&abstract_name, "READY=1").is_err());
     }
 

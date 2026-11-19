@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-title: presswork
+title: yindle
 message: If you use this software, please cite it as below.
 type: software
 authors:
@@ -19,7 +19,7 @@ keywords:
 license:
   - Apache-2.0
   - MIT
-repository-code: https://github.com/vindeckyy/presswork
-url: https://vindeckyy.github.io/presswork/
-version: 0.1.0
-date-released: "2026-11-12"
+repository-code: https://github.com/vindeckyy/yindle
+url: https://vindeckyy.github.io/yindle/
+version: 0.1.1
+date-released: "2026-11-13"

@@ -1,9 +1,9 @@
 # Maintainer: vindeckyy <35399491+vindeckyy@users.noreply.github.com>
-pkgname=presswork
-pkgver=0.1.0
+pkgname=yindle
+pkgver=0.1.1
 pkgrel=0
 pkgdesc="Memory-safe CUPS-compatible print spooler and IPP scheduler"
-url="https://github.com/vindeckyy/presswork"
+url="https://github.com/vindeckyy/yindle"
 arch="all"
 license="Apache-2.0 OR MIT"
 depends=""
@@ -11,7 +11,7 @@ makedepends="cargo rust"
 provides="cups"
 install="$pkgname.pre-install"
 subpackages="$pkgname-doc $pkgname-openrc"
-source="$pkgname-$pkgver.tar.gz::https://github.com/vindeckyy/presswork/archive/refs/tags/v$pkgver.tar.gz"
+source="$pkgname-$pkgver.tar.gz::https://github.com/vindeckyy/yindle/archive/refs/tags/v$pkgver.tar.gz"
 
 build() {
     cargo build --workspace --release --frozen
@@ -24,8 +24,8 @@ check() {
 package() {
     # Unprivileged install without systemd units on OpenRC-based Alpine.
     make install-files DESTDIR="$pkgdir" PROFILE=release CHOWN=0 INSTALL_SYSTEMD=0
-    install -Dm755 packaging/alpine/presswork.initd \
-        "$pkgdir/etc/init.d/presswork"
+    install -Dm755 packaging/alpine/yindle.initd \
+        "$pkgdir/etc/init.d/yindle"
     install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/MIT"
     install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/Apache-2.0"
 }

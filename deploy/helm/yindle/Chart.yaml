@@ -1,0 +1,21 @@
+apiVersion: v2
+name: yindle
+description: Enterprise Helm chart for Yindle — a memory-safe, CUPS-compatible print spooler and IPP scheduler in Rust
+type: application
+version: 0.1.1
+appVersion: "0.1.1"
+home: https://vindeckyy.github.io/yindle/
+sources:
+  - https://github.com/vindeckyy/yindle
+keywords:
+  - yindle
+  - cups
+  - ipp
+  - printing
+  - print-spooler
+maintainers:
+  - name: vindeckyy
+    url: https://github.com/vindeckyy/yindle
+annotations:
+  artifacthub.io/license: Apache-2.0 OR MIT
+  artifacthub.io/category: networking

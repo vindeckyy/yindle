@@ -1,4 +1,4 @@
-//! `cups-exec` — Presswork sandbox launcher matching CUPS `scheduler/cups-exec.c`.
+//! `cups-exec` — Yindle sandbox launcher matching CUPS `scheduler/cups-exec.c`.
 //!
 //! Usage:
 //!   `cups-exec <sandbox-profile> <uid> <gid> <nice> <path> [argv0 args...]`

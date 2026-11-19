@@ -12,4 +12,4 @@ workspace = true
 cups-config = { path = "../../crates/cups-config" }
 mime-db = { path = "../../crates/mime-db" }
 pipeline = { path = "../../crates/pipeline" }
-sys = { path = "../../crates/sys", package = "presswork-sys" }
+sys = { path = "../../crates/sys", package = "yindle-sys" }

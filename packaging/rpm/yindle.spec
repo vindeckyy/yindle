@@ -1,9 +1,9 @@
-Name:           presswork
-Version:        0.1.0
+Name:           yindle
+Version:        0.1.1
 Release:        1%{?dist}
 Summary:        Memory-safe CUPS-compatible print spooler and IPP scheduler
 License:        Apache-2.0 OR MIT
-URL:            https://github.com/vindeckyy/presswork
+URL:            https://github.com/vindeckyy/yindle
 Source0:        %{url}/archive/refs/tags/v%{version}/%{name}-%{version}.tar.gz
 
 BuildRequires:  cargo
@@ -16,7 +16,7 @@ Provides:       cups-daemon
 Conflicts:      cups
 
 %description
-presswork is a from-scratch reimplementation of the CUPS 2.x print
+yindle is a from-scratch reimplementation of the CUPS 2.x print
 spooler and IPP scheduler in Rust — driverless IPP first, with a PPD /
 legacy-driver layer for parity. It speaks the same IPP on the same
 sockets, reads /etc/cups config in place, and keeps the same
@@ -56,7 +56,7 @@ getent group lpadmin >/dev/null || groupadd -r lpadmin
 exit 0
 
 %post
-%tmpfiles_create %{_tmpfilesdir}/presswork.conf
+%tmpfiles_create %{_tmpfilesdir}/yindle.conf
 %systemd_post cups.service cups.socket cups.path
 chgrp lp /etc/cups /etc/cups/cupsd.conf /etc/cups/cups-files.conf \
     /etc/cups/cupsd.conf.default /etc/cups/cups-files.conf.default 2>/dev/null || :
@@ -86,7 +86,7 @@ chown -R lp:lp /var/spool/cups /var/log/cups /var/cache/cups 2>/dev/null || :
 %attr(0640,root,lp) %{_sysconfdir}/cups/cupsd.conf.default
 %attr(0640,root,lp) %{_sysconfdir}/cups/cups-files.conf.default
 %config(noreplace) %attr(0644,root,root) %{_sysconfdir}/pam.d/cups
-%config(noreplace) %attr(0644,root,root) %{_sysconfdir}/logrotate.d/presswork
+%config(noreplace) %attr(0644,root,root) %{_sysconfdir}/logrotate.d/yindle
 %dir %attr(0710,lp,lp) /var/spool/cups
 %dir %attr(0710,lp,lp) /var/spool/cups/tmp
 %dir %attr(0755,lp,lp) /var/log/cups
@@ -99,9 +99,11 @@ chown -R lp:lp /var/spool/cups /var/log/cups /var/cache/cups 2>/dev/null || :
 %{_unitdir}/cups.path
 %{_unitdir}/cups-lpd@.service
 %{_unitdir}/cups-lpd.socket
-%{_tmpfilesdir}/presswork.conf
-%{_sysusersdir}/presswork.conf
+%{_tmpfilesdir}/yindle.conf
+%{_sysusersdir}/yindle.conf
 
 %changelog
-* Wed Nov 18 2026 vindeckyy <35399491+vindeckyy@users.noreply.github.com> - 0.1.0-1
-- Initial package with hardened systemd units, tmpfiles.d, sysusers.d, and unprivileged build
+* Wed Nov 18 2026 vindeckyy <35399491+vindeckyy@users.noreply.github.com> - 0.1.1-1
+- Rename to yindle; hardened systemd units, tmpfiles.d, sysusers.d, and unprivileged build
+* Wed Nov 12 2025 vindeckyy <35399491+vindeckyy@users.noreply.github.com> - 0.1.0-1
+- Initial package

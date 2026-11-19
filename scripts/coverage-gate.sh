@@ -87,7 +87,7 @@ PASS_COUNT=0
 FAIL_COUNT=0
 RESULTS=()
 
-echo "=== Presswork Per-Crate Coverage Gate (threshold: >= ${THRESHOLD}% lines) ==="
+echo "=== Yindle Per-Crate Coverage Gate (threshold: >= ${THRESHOLD}% lines) ==="
 
 for pkg in "${PACKAGES[@]}"; do
     OUT_FILE=$(mktemp)

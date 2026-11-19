@@ -2,7 +2,7 @@
 //! `scheduler/dirsvc.c`'s `dnssdRegisterPrinter` + `cupsdStartBrowsing`.
 //!
 //! Uses the pure-Rust `mdns-sd` responder (no Avahi/D-Bus runtime dep) so
-//! presswork can advertise and discover printers self-contained on Linux.
+//! yindle can advertise and discover printers self-contained on Linux.
 //!
 //! ## Advertisement (`cupsdRegisterPrinter`)
 //! For each shared printer we register, per upstream:
@@ -1075,7 +1075,7 @@ mod tests {
         let p = SharedPrinter {
             name: unique_name.clone(),
             info: format!("PW Test {}", std::process::id()),
-            make_model: "Presswork Test".into(),
+            make_model: "Yindle Test".into(),
             pdl: "application/pdf,image/urf".into(),
             printer_type: ptype_bit(ptype::COLOR),
             printer_state: 3,

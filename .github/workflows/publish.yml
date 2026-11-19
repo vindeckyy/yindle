@@ -45,7 +45,7 @@ jobs:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       DRY_RUN: ${{ inputs.dry_run }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref || github.ref }}
           persist-credentials: false
@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           # Leaves first; crates that depend on published crates last.
-          CRATES=(ipp-codec presswork-sys backend-common cups-tls cups-log cups-config)
+          CRATES=(ipp-codec yindle-sys backend-common cups-tls cups-log cups-config)
 
           if [ "$DRY_RUN" = "true" ]; then
             for c in "${CRATES[@]}"; do

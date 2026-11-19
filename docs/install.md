@@ -1,8 +1,8 @@
-# Installing Presswork
+# Installing Yindle
 
-Presswork installs the standard CUPS FHS layout (`/usr/sbin/cupsd`, `/usr/bin/cupsfilter`, `/usr/lib/cups/{daemon,backend,filter}`, `/usr/share/cups/mime`, `/etc/cups`, `/var/{spool,log,cache}/cups`, `/run/cups`) and standard systemd units (`cups.service`, `cups.socket`, `cups.path`, `cups-lpd.socket`, `cups-lpd@.service`).
+Yindle installs the standard CUPS FHS layout (`/usr/sbin/cupsd`, `/usr/bin/cupsfilter`, `/usr/lib/cups/{daemon,backend,filter}`, `/usr/share/cups/mime`, `/etc/cups`, `/var/{spool,log,cache}/cups`, `/run/cups`) and standard systemd units (`cups.service`, `cups.socket`, `cups.path`, `cups-lpd.socket`, `cups-lpd@.service`).
 
-> **Companion packages**: Presswork replaces the scheduler, helper daemons, and backends. Keep your distribution's **`cups-client`** (for `lp`, `lpr`, `lpstat`, `lpadmin`, `cancel`) and, if printing to non-driverless / legacy PPD printers, **`cups-filters`** (for `pstops`, `pdftopdf`, `rastertopwg`, etc.).
+> **Companion packages**: Yindle replaces the scheduler, helper daemons, and backends. Keep your distribution's **`cups-client`** (for `lp`, `lpr`, `lpstat`, `lpadmin`, `cancel`) and, if printing to non-driverless / legacy PPD printers, **`cups-filters`** (for `pstops`, `pdftopdf`, `rastertopwg`, etc.).
 
 ---
 
@@ -35,7 +35,7 @@ The shipped `docker-compose.yml` binds `127.0.0.1:8631:631`, uses `read_only: tr
 ### Standalone `docker run`
 
 ```sh
-docker run -d --name presswork \
+docker run -d --name yindle \
   -p 127.0.0.1:8631:631 \
   --read-only \
   --security-opt no-new-privileges:true \
@@ -47,7 +47,7 @@ docker run -d --name presswork \
   -v cups-spool:/var/spool/cups \
   -v cups-log:/var/log/cups \
   -v cups-cache:/var/cache/cups \
-  ghcr.io/vindeckyy/presswork:0.1.0
+  ghcr.io/vindeckyy/yindle:0.1.1
 ```
 
 Verify the container without touching host CUPS:
@@ -62,29 +62,29 @@ lpstat -h 127.0.0.1:8631 -t
 
 ## 3. Kubernetes (Helm Chart)
 
-Deploy Presswork as a hardened non-root StatefulSet with PVCs, `/healthz` + `/readyz` probes, `NetworkPolicy`, and optional Prometheus `ServiceMonitor`:
+Deploy Yindle as a hardened non-root StatefulSet with PVCs, `/healthz` + `/readyz` probes, `NetworkPolicy`, and optional Prometheus `ServiceMonitor`:
 
 ```sh
-helm upgrade --install presswork ./deploy/helm/presswork \
+helm upgrade --install yindle ./deploy/helm/yindle \
   --namespace printing --create-namespace \
   --set serviceMonitor.enabled=true
 ```
 
-See [docs/operations.md#kubernetes--helm-deployhelmpresswork](operations.md#kubernetes--helm-deployhelmpresswork) for full values, Prometheus alert rules (`deploy/monitoring/prometheus-alerts.yaml`), and Grafana dashboard import (`deploy/monitoring/grafana-dashboard.json`).
+See [docs/operations.md#kubernetes--helm-deployhelmyindle](operations.md#kubernetes--helm-deployhelmyindle) for full values, Prometheus alert rules (`deploy/monitoring/prometheus-alerts.yaml`), and Grafana dashboard import (`deploy/monitoring/grafana-dashboard.json`).
 
 ---
 
 ## 4. Native Linux Installer (`install.sh`, `x86_64` & `aarch64`)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/vindeckyy/presswork/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vindeckyy/yindle/main/install.sh | sh
 ```
 
 What `install.sh` does:
 - Detects `x86_64` or `aarch64` Linux and downloads the matching release tarball.
 - **Fails closed on integrity verification**: downloads `SHA256SUMS` and verifies the tarball digest before extracting (refuses to proceed if checksums cannot be verified unless `--insecure-skip-verify` is explicitly passed).
-- **Preserves existing operator configs**: never overwrites existing `/etc/cups/cupsd.conf`, `/etc/cups/cups-files.conf`, `/etc/pam.d/cups`, or `/etc/logrotate.d/presswork` (writes new defaults to `*.new` / `*.default`).
-- Creates `lp` and `lpadmin` accounts without adding `lp` to `lpadmin`, installs `/usr/lib/tmpfiles.d/presswork.conf` and `/usr/lib/sysusers.d/presswork.conf`, enables `cups.socket` + `cups.path` (loopback-only by default), and runs `cupsd -t`.
+- **Preserves existing operator configs**: never overwrites existing `/etc/cups/cupsd.conf`, `/etc/cups/cups-files.conf`, `/etc/pam.d/cups`, or `/etc/logrotate.d/yindle` (writes new defaults to `*.new` / `*.default`).
+- Creates `lp` and `lpadmin` accounts without adding `lp` to `lpadmin`, installs `/usr/lib/tmpfiles.d/yindle.conf` and `/usr/lib/sysusers.d/yindle.conf`, enables `cups.socket` + `cups.path` (loopback-only by default), and runs `cupsd -t`.
 
 Supported installer flags:
 
@@ -95,7 +95,7 @@ Supported installer flags:
 | `--from DIR` | Install from an already-unpacked release directory |
 | `--force` | Proceed even if another `/usr/sbin/cupsd` is already present |
 | `--insecure-skip-verify` | Skip `SHA256SUMS` verification (not recommended) |
-| `--uninstall` | Remove installed Presswork binaries and units (preserves `/etc/cups/*.conf` and `/var/spool/cups`) |
+| `--uninstall` | Remove installed Yindle binaries and units (preserves `/etc/cups/*.conf` and `/var/spool/cups`) |
 
 ---
 
@@ -103,10 +103,10 @@ Supported installer flags:
 
 ### Debian / Ubuntu (`.deb`)
 
-Download `presswork_<version>-1_amd64.deb` from the [GitHub Releases](https://github.com/vindeckyy/presswork/releases) page:
+Download `yindle_<version>-1_amd64.deb` from the [GitHub Releases](https://github.com/vindeckyy/yindle/releases) page:
 
 ```sh
-sudo apt-get install -y ./presswork_0.1.0-1_amd64.deb
+sudo apt-get install -y ./yindle_0.1.1-1_amd64.deb
 ```
 
 The `.deb` declares `Provides: cups, cups-daemon`, `Conflicts: cups, cups-daemon`, `Replaces: cups-daemon`, `Recommends: cups-client, cups-filters`, registers `DEBIAN/conffiles`, sets proper directory/config permissions, and enables `cups.socket` + `cups.path`. You can also build a native Debian package from source via `dpkg-buildpackage -us -uc` using `packaging/debian/`.
@@ -114,31 +114,31 @@ The `.deb` declares `Provides: cups, cups-daemon`, `Conflicts: cups, cups-daemon
 ### Release Tarballs (`glibc` & `musl`, `x86_64` & `aarch64`)
 
 Each release publishes four Linux tarballs:
-- `presswork-<version>-x86_64-unknown-linux-gnu.tar.gz`
-- `presswork-<version>-aarch64-unknown-linux-gnu.tar.gz`
-- `presswork-<version>-x86_64-unknown-linux-musl.tar.gz`
-- `presswork-<version>-aarch64-unknown-linux-musl.tar.gz`
+- `yindle-<version>-x86_64-unknown-linux-gnu.tar.gz`
+- `yindle-<version>-aarch64-unknown-linux-gnu.tar.gz`
+- `yindle-<version>-x86_64-unknown-linux-musl.tar.gz`
+- `yindle-<version>-aarch64-unknown-linux-musl.tar.gz`
 
 Extract and install with the bundled installer:
 
 ```sh
-tar -xzf presswork-0.1.0-x86_64-unknown-linux-gnu.tar.gz
-cd presswork-0.1.0
+tar -xzf yindle-0.1.1-x86_64-unknown-linux-gnu.tar.gz
+cd yindle-0.1.1
 ./install.sh --from .
 ```
 
 ### Fedora / RHEL / Rocky / AlmaLinux (RPM)
 
-Build an RPM from `packaging/rpm/presswork.spec` (supports unprivileged `rpmbuild`/`mock` builds with `CHOWN=0`, `%config(noreplace)`, `tmpfiles.d`, and `sysusers.d`).
+Build an RPM from `packaging/rpm/yindle.spec` (supports unprivileged `rpmbuild`/`mock` builds with `CHOWN=0`, `%config(noreplace)`, `tmpfiles.d`, and `sysusers.d`).
 
 ### Arch Linux / AUR
 
 - Source package: `packaging/arch/PKGBUILD` (`depends=('glibc' 'gcc-libs' 'libxcrypt')`; uses dynamic `libcrypt.so.2` resolution—no `libxcrypt-compat` needed).
-- Prebuilt binary package: `packaging/aur-bin/PKGBUILD` (`presswork-bin`).
+- Prebuilt binary package: `packaging/aur-bin/PKGBUILD` (`yindle-bin`).
 
 ### Alpine Linux (OpenRC)
 
-`packaging/alpine/APKBUILD` builds Presswork without systemd units (`INSTALL_SYSTEMD=0`) and installs an executable `/etc/init.d/presswork` OpenRC script.
+`packaging/alpine/APKBUILD` builds Yindle without systemd units (`INSTALL_SYSTEMD=0`) and installs an executable `/etc/init.d/yindle` OpenRC script.
 
 ### Nix / NixOS
 
@@ -147,7 +147,7 @@ Build an RPM from `packaging/rpm/presswork.spec` (supports unprivileged `rpmbuil
 ### Homebrew on Linux
 
 ```sh
-brew install vindeckyy/tap/presswork && brew services start presswork
+brew install vindeckyy/tap/yindle && brew services start yindle
 ```
 
 Runs in user space on port `8631` under the Homebrew prefix so it coexists cleanly with a system CUPS daemon.
@@ -179,19 +179,19 @@ Useful `Makefile` targets: `make build`, `make install`, `make install-files`, `
 
 ## 7. Verifying Release Checksums, SBOM & SLSA Provenance
 
-Every tagged GitHub release ships `SHA256SUMS`, a CycloneDX SBOM (`presswork-<version>.cdx.json`), and signed GitHub Artifact Build Provenance + SBOM attestations:
+Every tagged GitHub release ships `SHA256SUMS`, a CycloneDX SBOM (`yindle-<version>.cdx.json`), and signed GitHub Artifact Build Provenance + SBOM attestations:
 
 ```sh
 # 1. Verify SHA-256 digest
 sha256sum -c SHA256SUMS --ignore-missing
 
 # 2. Verify SLSA build provenance for a release tarball or .deb (requires gh >= 2.49)
-gh attestation verify presswork-0.1.0-x86_64-unknown-linux-gnu.tar.gz \
-  --repo vindeckyy/presswork
+gh attestation verify yindle-0.1.1-x86_64-unknown-linux-gnu.tar.gz \
+  --repo vindeckyy/yindle
 
 # 3. Verify container image provenance and SBOM attestations
-gh attestation verify oci://ghcr.io/vindeckyy/presswork:0.1.0 \
-  --repo vindeckyy/presswork
+gh attestation verify oci://ghcr.io/vindeckyy/yindle:0.1.1 \
+  --repo vindeckyy/yindle
 ```
 
 See [SECURITY.md](../SECURITY.md#supply-chain-sbom--provenance-verification) for full verification details.

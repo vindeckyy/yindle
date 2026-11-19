@@ -1,6 +1,6 @@
 [Unit]
 Description=CUPS Scheduler
-Documentation=man:cupsd(8) https://github.com/vindeckyy/presswork
+Documentation=man:cupsd(8) https://github.com/vindeckyy/yindle
 After=network.target nss-lookup.target nslcd.service
 
 [Service]
@@ -10,7 +10,7 @@ Type=simple
 Restart=on-failure
 RestartSec=5s
 
-# ---- presswork sandbox hardening -------------------------------------------
+# ---- yindle sandbox hardening -------------------------------------------
 # cupsd is a long-lived daemon that spawns filter/backend children and owns
 # the IPP surface. These directives are chosen to remain compatible with a
 # print spooler (spawning filters/backends, network IPP/LPD/JetDirect egress,

@@ -1,6 +1,6 @@
-.TH CUPS-LPD 8 "2026-11-18" "Presswork 0.1.0" "System Administration"
+.TH CUPS-LPD 8 "2026-11-18" "yindle 0.1.1" "System Administration"
 .SH NAME
-cups\-lpd \- Presswork RFC 1179 LPD-to-IPP compatibility daemon
+cups\-lpd \- Yindle RFC 1179 LPD-to-IPP compatibility daemon
 .SH SYNOPSIS
 .B /usr/lib/cups/daemon/cups\-lpd
 .SH DESCRIPTION
@@ -13,12 +13,12 @@ and
 .IR cups\-lpd@.service )
 or
 .BR inetd (8)
-\(en and forwards them to the local Presswork
+\(en and forwards them to the local Yindle
 .BR cupsd (8)
 scheduler over IPP on
 .BR 127.0.0.1 .
 .PP
-Unlike legacy in-RAM implementations, Presswork's
+Unlike legacy in-RAM implementations, Yindle's
 .B cups\-lpd
 streams incoming print jobs directly to a bounded temporary spool file created
 with mode

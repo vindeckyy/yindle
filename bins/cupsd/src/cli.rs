@@ -10,7 +10,7 @@ use cups_config::{AuditSeverity, ConfigAuditReport, Diagnostic, DirectiveStatus,
 /// Crate version reported by `-v` / `-V` / `--version` and `/healthz`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Log serialization format selected via `--log-format` or `PRESSWORK_LOG_FORMAT`.
+/// Log serialization format selected via `--log-format` or `YINDLE_LOG_FORMAT`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CliLogFormat {
     /// Classic CUPS / CLF plain text format.
@@ -72,7 +72,7 @@ pub struct CliArgs {
     pub foreground_no_detach: bool,
     /// `-l` on-demand / socket-activation mode (enables `IdleExitTimeout`).
     pub on_demand: bool,
-    /// `--log-format text|json` (falls back to `PRESSWORK_LOG_FORMAT`).
+    /// `--log-format text|json` (falls back to `YINDLE_LOG_FORMAT`).
     pub log_format: CliLogFormat,
     /// `--json` structured JSON output for `--check-config` and `doctor`.
     pub json: bool,
@@ -106,7 +106,7 @@ pub fn usage() -> &'static str {
      \x20 -l                       On-demand mode (socket activation / IdleExitTimeout).\n\
      \x20 -t                       Test configuration syntax and exit.\n\
      \x20 --check-config           Run migration & security configuration audit and exit.\n\
-     \x20 --log-format <text|json> Select log output format (env: PRESSWORK_LOG_FORMAT).\n\
+     \x20 --log-format <text|json> Select log output format (env: YINDLE_LOG_FORMAT).\n\
      \x20 --json                   Emit JSON output for --check-config or doctor.\n\
      \x20 -v, -V, --version        Show version and exit.\n\
      \x20 -h, --help               Show this help message and exit.\n\
@@ -118,11 +118,11 @@ pub fn usage() -> &'static str {
 /// Format the version banner printed for `-v` / `-V` / `--version`.
 #[must_use]
 pub fn version_line() -> String {
-    format!("cupsd {VERSION} (presswork)")
+    format!("cupsd {VERSION} (yindle)")
 }
 
 /// Parse CLI arguments (excluding `argv[0]`), consulting `env_log_format`
-/// (from `PRESSWORK_LOG_FORMAT`) as the default before explicit `--log-format`.
+/// (from `YINDLE_LOG_FORMAT`) as the default before explicit `--log-format`.
 pub fn parse_args<I>(args: I, env_log_format: Option<&str>) -> Result<Command, String>
 where
     I: IntoIterator<Item = OsString>,
@@ -131,7 +131,7 @@ where
     if let Some(raw) = env_log_format {
         if !raw.trim().is_empty() {
             parsed.log_format = CliLogFormat::parse(raw).ok_or_else(|| {
-                format!("cupsd: invalid PRESSWORK_LOG_FORMAT '{raw}' (expected 'text' or 'json')")
+                format!("cupsd: invalid YINDLE_LOG_FORMAT '{raw}' (expected 'text' or 'json')")
             })?;
         }
     }
@@ -436,7 +436,7 @@ mod tests {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let p = std::env::temp_dir().join(format!(
-            "presswork-cupsd-cli-{}-{tag}-{id}",
+            "yindle-cupsd-cli-{}-{tag}-{id}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&p);

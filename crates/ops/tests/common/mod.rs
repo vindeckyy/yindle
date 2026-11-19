@@ -26,7 +26,7 @@ impl TempDir {
     pub fn new(label: &str) -> Self {
         let seq = TEST_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
-        let path = std::env::temp_dir().join(format!("presswork-ops-test-{label}-{pid}-{seq}"));
+        let path = std::env::temp_dir().join(format!("yindle-ops-test-{label}-{pid}-{seq}"));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create temp test dir");
         Self { path }
@@ -324,9 +324,9 @@ pub fn valid_sample_ppd() -> String {
         "*LanguageVersion: English\n",
         "*LanguageEncoding: ISOLatin1\n",
         "*PCFileName: \"SAMPLE.PPD\"\n",
-        "*Manufacturer: \"Presswork\"\n",
-        "*ModelName: \"Presswork Color 1200\"\n",
-        "*NickName: \"Presswork Color 1200\"\n",
+        "*Manufacturer: \"Yindle\"\n",
+        "*ModelName: \"Yindle Color 1200\"\n",
+        "*NickName: \"Yindle Color 1200\"\n",
         "*ColorDevice: True\n",
         "*DefaultPageSize: A4\n",
         "*PageSize A4/A4: \"\"\n",
@@ -339,7 +339,7 @@ pub fn valid_sample_ppd() -> String {
         "*DefaultResolution: 1200dpi\n",
         "*Resolution 600dpi/600 DPI: \"\"\n",
         "*Resolution 1200dpi/1200 DPI: \"\"\n",
-        "*cupsFilter: \"application/vnd.presswork-test 10 pdftopdf\"\n",
+        "*cupsFilter: \"application/vnd.yindle-test 10 pdftopdf\"\n",
         "*cupsFilter2: \"application/pdf application/pdf 0 -\"\n",
         "*cupsManualCopies: False\n",
     )

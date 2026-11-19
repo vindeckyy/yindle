@@ -3,15 +3,15 @@
 //!
 //! All metric names and label keys match `deploy/monitoring/prometheus-alerts.yaml`
 //! and `deploy/monitoring/grafana-dashboard.json` 100% verbatim:
-//! - `presswork_jobs_active{printer}`
-//! - `presswork_jobs_pending{printer}`
-//! - `presswork_jobs_total{state}`
-//! - `presswork_job_duration_seconds_bucket{le}` / `_sum` / `_count`
-//! - `presswork_ipp_requests_total{operation,status}`
-//! - `presswork_auth_failures_total{reason}`
-//! - `presswork_active_clients`
-//! - `presswork_filter_cost_current`
-//! - `presswork_filter_limit`
+//! - `yindle_jobs_active{printer}`
+//! - `yindle_jobs_pending{printer}`
+//! - `yindle_jobs_total{state}`
+//! - `yindle_job_duration_seconds_bucket{le}` / `_sum` / `_count`
+//! - `yindle_ipp_requests_total{operation,status}`
+//! - `yindle_auth_failures_total{reason}`
+//! - `yindle_active_clients`
+//! - `yindle_filter_cost_current`
+//! - `yindle_filter_limit`
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -29,7 +29,7 @@ use crate::cli::{push_json_str, VERSION};
 /// Prometheus text exposition content type (version 0.0.4).
 pub const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
-/// Histogram bucket upper bounds (seconds) for `presswork_job_duration_seconds`.
+/// Histogram bucket upper bounds (seconds) for `yindle_job_duration_seconds`.
 pub const JOB_DURATION_BUCKETS: &[f64] = &[
     0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0,
 ];
@@ -78,14 +78,14 @@ impl DurationHistogram {
 
     fn render(&self, out: &mut String) {
         out.push_str(
-            "# HELP presswork_job_duration_seconds Print job processing duration in seconds.\n\
-             # TYPE presswork_job_duration_seconds histogram\n",
+            "# HELP yindle_job_duration_seconds Print job processing duration in seconds.\n\
+             # TYPE yindle_job_duration_seconds histogram\n",
         );
         for (i, &bound) in JOB_DURATION_BUCKETS.iter().enumerate() {
             let v = self.buckets[i].load(Ordering::Relaxed);
             let _ = writeln!(
                 out,
-                "presswork_job_duration_seconds_bucket{{le=\"{bound}\"}} {v}"
+                "yindle_job_duration_seconds_bucket{{le=\"{bound}\"}} {v}"
             );
         }
         let total = self.count.load(Ordering::Relaxed);
@@ -93,10 +93,10 @@ impl DurationHistogram {
         let sum_secs = self.sum_micros.load(Ordering::Relaxed) as f64 / 1_000_000.0;
         let _ = writeln!(
             out,
-            "presswork_job_duration_seconds_bucket{{le=\"+Inf\"}} {total}"
+            "yindle_job_duration_seconds_bucket{{le=\"+Inf\"}} {total}"
         );
-        let _ = writeln!(out, "presswork_job_duration_seconds_sum {sum_secs:.6}");
-        let _ = writeln!(out, "presswork_job_duration_seconds_count {total}");
+        let _ = writeln!(out, "yindle_job_duration_seconds_sum {sum_secs:.6}");
+        let _ = writeln!(out, "yindle_job_duration_seconds_count {total}");
     }
 }
 
@@ -108,17 +108,17 @@ pub struct Metrics {
     active_clients: AtomicI64,
     filter_cost_current: AtomicU64,
     filter_limit: AtomicU64,
-    /// `presswork_jobs_total{state}`
+    /// `yindle_jobs_total{state}`
     jobs_total: RwLock<BTreeMap<String, u64>>,
-    /// `presswork_ipp_requests_total{operation,status}`
+    /// `yindle_ipp_requests_total{operation,status}`
     ipp_requests: RwLock<BTreeMap<(String, String), u64>>,
-    /// `presswork_auth_failures_total{reason}`
+    /// `yindle_auth_failures_total{reason}`
     auth_failures: RwLock<BTreeMap<String, u64>>,
-    /// `presswork_pages_printed_total{printer}`
+    /// `yindle_pages_printed_total{printer}`
     pages_printed: RwLock<BTreeMap<String, u64>>,
-    /// `presswork_http_requests_total{method,status}`
+    /// `yindle_http_requests_total{method,status}`
     http_requests: RwLock<BTreeMap<(String, u16), u64>>,
-    /// `presswork_job_duration_seconds`
+    /// `yindle_job_duration_seconds`
     job_duration: DurationHistogram,
 }
 
@@ -355,36 +355,36 @@ impl Metrics {
             }
         }
 
-        // 1. presswork_jobs_active{printer}
+        // 1. yindle_jobs_active{printer}
         out.push_str(
-            "# HELP presswork_jobs_active Number of actively processing print jobs per printer.\n\
-             # TYPE presswork_jobs_active gauge\n",
+            "# HELP yindle_jobs_active Number of actively processing print jobs per printer.\n\
+             # TYPE yindle_jobs_active gauge\n",
         );
         for (printer, count) in &active_by_printer {
             let _ = writeln!(
                 out,
-                "presswork_jobs_active{{printer=\"{}\"}} {count}",
+                "yindle_jobs_active{{printer=\"{}\"}} {count}",
                 escape_prom_label(printer)
             );
         }
 
-        // 2. presswork_jobs_pending{printer}
+        // 2. yindle_jobs_pending{printer}
         out.push_str(
-            "# HELP presswork_jobs_pending Number of pending or held print jobs per printer.\n\
-             # TYPE presswork_jobs_pending gauge\n",
+            "# HELP yindle_jobs_pending Number of pending or held print jobs per printer.\n\
+             # TYPE yindle_jobs_pending gauge\n",
         );
         for (printer, count) in &pending_by_printer {
             let _ = writeln!(
                 out,
-                "presswork_jobs_pending{{printer=\"{}\"}} {count}",
+                "yindle_jobs_pending{{printer=\"{}\"}} {count}",
                 escape_prom_label(printer)
             );
         }
 
-        // 3. presswork_jobs_total{state}
+        // 3. yindle_jobs_total{state}
         out.push_str(
-            "# HELP presswork_jobs_total Total print jobs reaching a terminal state.\n\
-             # TYPE presswork_jobs_total counter\n",
+            "# HELP yindle_jobs_total Total print jobs reaching a terminal state.\n\
+             # TYPE yindle_jobs_total counter\n",
         );
         {
             let jt = self
@@ -394,19 +394,19 @@ impl Metrics {
             for (state, count) in jt.iter() {
                 let _ = writeln!(
                     out,
-                    "presswork_jobs_total{{state=\"{}\"}} {count}",
+                    "yindle_jobs_total{{state=\"{}\"}} {count}",
                     escape_prom_label(state)
                 );
             }
         }
 
-        // 4. presswork_job_duration_seconds (histogram)
+        // 4. yindle_job_duration_seconds (histogram)
         self.job_duration.render(&mut out);
 
-        // 5. presswork_ipp_requests_total{operation,status}
+        // 5. yindle_ipp_requests_total{operation,status}
         out.push_str(
-            "# HELP presswork_ipp_requests_total Total IPP requests handled by operation and status.\n\
-             # TYPE presswork_ipp_requests_total counter\n",
+            "# HELP yindle_ipp_requests_total Total IPP requests handled by operation and status.\n\
+             # TYPE yindle_ipp_requests_total counter\n",
         );
         {
             let ipp = self
@@ -416,17 +416,17 @@ impl Metrics {
             for ((op, st), count) in ipp.iter() {
                 let _ = writeln!(
                     out,
-                    "presswork_ipp_requests_total{{operation=\"{}\",status=\"{}\"}} {count}",
+                    "yindle_ipp_requests_total{{operation=\"{}\",status=\"{}\"}} {count}",
                     escape_prom_label(op),
                     escape_prom_label(st)
                 );
             }
         }
 
-        // 6. presswork_auth_failures_total{reason}
+        // 6. yindle_auth_failures_total{reason}
         out.push_str(
-            "# HELP presswork_auth_failures_total Total authentication and authorization failures.\n\
-             # TYPE presswork_auth_failures_total counter\n",
+            "# HELP yindle_auth_failures_total Total authentication and authorization failures.\n\
+             # TYPE yindle_auth_failures_total counter\n",
         );
         {
             let af = self
@@ -436,53 +436,50 @@ impl Metrics {
             for (reason, count) in af.iter() {
                 let _ = writeln!(
                     out,
-                    "presswork_auth_failures_total{{reason=\"{}\"}} {count}",
+                    "yindle_auth_failures_total{{reason=\"{}\"}} {count}",
                     escape_prom_label(reason)
                 );
             }
         }
 
-        // 7. presswork_active_clients
+        // 7. yindle_active_clients
         out.push_str(
-            "# HELP presswork_active_clients Current number of active HTTP/IPP client connections.\n\
-             # TYPE presswork_active_clients gauge\n",
+            "# HELP yindle_active_clients Current number of active HTTP/IPP client connections.\n\
+             # TYPE yindle_active_clients gauge\n",
         );
-        let _ = writeln!(out, "presswork_active_clients {}", self.active_clients());
+        let _ = writeln!(out, "yindle_active_clients {}", self.active_clients());
 
-        // 8. presswork_filter_cost_current & presswork_filter_limit
+        // 8. yindle_filter_cost_current & yindle_filter_limit
         out.push_str(
-            "# HELP presswork_filter_cost_current Current filter pipeline cost in use.\n\
-             # TYPE presswork_filter_cost_current gauge\n",
+            "# HELP yindle_filter_cost_current Current filter pipeline cost in use.\n\
+             # TYPE yindle_filter_cost_current gauge\n",
         );
         let _ = writeln!(
             out,
-            "presswork_filter_cost_current {}",
+            "yindle_filter_cost_current {}",
             self.filter_cost_current()
         );
         out.push_str(
-            "# HELP presswork_filter_limit Configured FilterLimit budget (0 means unlimited).\n\
-             # TYPE presswork_filter_limit gauge\n",
+            "# HELP yindle_filter_limit Configured FilterLimit budget (0 means unlimited).\n\
+             # TYPE yindle_filter_limit gauge\n",
         );
-        let _ = writeln!(out, "presswork_filter_limit {}", self.filter_limit());
+        let _ = writeln!(out, "yindle_filter_limit {}", self.filter_limit());
 
         // 9. Supplementary SRE gauges/counters
         out.push_str(
-            "# HELP presswork_printers_total Registered destinations by state.\n\
-             # TYPE presswork_printers_total gauge\n",
+            "# HELP yindle_printers_total Registered destinations by state.\n\
+             # TYPE yindle_printers_total gauge\n",
         );
-        let _ = writeln!(out, "presswork_printers_total{{state=\"idle\"}} {idle_n}");
+        let _ = writeln!(out, "yindle_printers_total{{state=\"idle\"}} {idle_n}");
         let _ = writeln!(
             out,
-            "presswork_printers_total{{state=\"processing\"}} {proc_n}"
+            "yindle_printers_total{{state=\"processing\"}} {proc_n}"
         );
-        let _ = writeln!(
-            out,
-            "presswork_printers_total{{state=\"stopped\"}} {stop_n}"
-        );
+        let _ = writeln!(out, "yindle_printers_total{{state=\"stopped\"}} {stop_n}");
 
         out.push_str(
-            "# HELP presswork_pages_printed_total Total pages reported via PAGE: status events.\n\
-             # TYPE presswork_pages_printed_total counter\n",
+            "# HELP yindle_pages_printed_total Total pages reported via PAGE: status events.\n\
+             # TYPE yindle_pages_printed_total counter\n",
         );
         {
             let pp = self
@@ -492,15 +489,15 @@ impl Metrics {
             for (printer, count) in pp.iter() {
                 let _ = writeln!(
                     out,
-                    "presswork_pages_printed_total{{printer=\"{}\"}} {count}",
+                    "yindle_pages_printed_total{{printer=\"{}\"}} {count}",
                     escape_prom_label(printer)
                 );
             }
         }
 
         out.push_str(
-            "# HELP presswork_http_requests_total Total HTTP requests handled by method and status code.\n\
-             # TYPE presswork_http_requests_total counter\n",
+            "# HELP yindle_http_requests_total Total HTTP requests handled by method and status code.\n\
+             # TYPE yindle_http_requests_total counter\n",
         );
         {
             let hr = self
@@ -510,25 +507,25 @@ impl Metrics {
             for ((method, status), count) in hr.iter() {
                 let _ = writeln!(
                     out,
-                    "presswork_http_requests_total{{method=\"{}\",status=\"{status}\"}} {count}",
+                    "yindle_http_requests_total{{method=\"{}\",status=\"{status}\"}} {count}",
                     escape_prom_label(method)
                 );
             }
         }
 
         out.push_str(
-            "# HELP presswork_uptime_seconds Scheduler uptime in seconds.\n\
-             # TYPE presswork_uptime_seconds gauge\n",
+            "# HELP yindle_uptime_seconds Scheduler uptime in seconds.\n\
+             # TYPE yindle_uptime_seconds gauge\n",
         );
-        let _ = writeln!(out, "presswork_uptime_seconds {}", self.uptime_seconds());
+        let _ = writeln!(out, "yindle_uptime_seconds {}", self.uptime_seconds());
 
         out.push_str(
-            "# HELP presswork_info Presswork daemon build info.\n\
-             # TYPE presswork_info gauge\n",
+            "# HELP yindle_info Yindle daemon build info.\n\
+             # TYPE yindle_info gauge\n",
         );
         let _ = writeln!(
             out,
-            "presswork_info{{version=\"{}\"}} 1",
+            "yindle_info{{version=\"{}\"}} 1",
             escape_prom_label(VERSION)
         );
 
@@ -714,24 +711,24 @@ mod tests {
             Some(PROMETHEUS_CONTENT_TYPE)
         );
         let text = String::from_utf8(resp.body).unwrap();
-        assert!(text.contains("presswork_jobs_active{printer=\"laser1\"} 1"));
-        assert!(text.contains("presswork_jobs_pending{printer=\"laser1\"} 1"));
-        assert!(text.contains("presswork_jobs_pending{printer=\"idle1\"} 0"));
-        assert!(text.contains("presswork_jobs_total{state=\"completed\"} 1"));
-        assert!(text.contains("presswork_jobs_total{state=\"aborted\"} 1"));
-        assert!(text.contains("presswork_jobs_total{state=\"canceled-at-device\"} 1"));
-        assert!(text.contains("presswork_job_duration_seconds_bucket{le=\"0.5\"} 2"));
-        assert!(text.contains("presswork_job_duration_seconds_bucket{le=\"+Inf\"} 2"));
-        assert!(text.contains("presswork_job_duration_seconds_count 2"));
+        assert!(text.contains("yindle_jobs_active{printer=\"laser1\"} 1"));
+        assert!(text.contains("yindle_jobs_pending{printer=\"laser1\"} 1"));
+        assert!(text.contains("yindle_jobs_pending{printer=\"idle1\"} 0"));
+        assert!(text.contains("yindle_jobs_total{state=\"completed\"} 1"));
+        assert!(text.contains("yindle_jobs_total{state=\"aborted\"} 1"));
+        assert!(text.contains("yindle_jobs_total{state=\"canceled-at-device\"} 1"));
+        assert!(text.contains("yindle_job_duration_seconds_bucket{le=\"0.5\"} 2"));
+        assert!(text.contains("yindle_job_duration_seconds_bucket{le=\"+Inf\"} 2"));
+        assert!(text.contains("yindle_job_duration_seconds_count 2"));
         assert!(text.contains(
-            "presswork_ipp_requests_total{operation=\"Print-Job\",status=\"successful-ok\"} 1"
+            "yindle_ipp_requests_total{operation=\"Print-Job\",status=\"successful-ok\"} 1"
         ));
-        assert!(text.contains("presswork_auth_failures_total{reason=\"invalid_credentials\"} 1"));
-        assert!(text.contains("presswork_active_clients 0"));
-        assert!(text.contains("presswork_filter_cost_current 0"));
-        assert!(text.contains("presswork_filter_limit 300"));
-        assert!(text.contains("presswork_pages_printed_total{printer=\"laser1\"} 3"));
-        assert!(text.contains("presswork_http_requests_total{method=\"GET\",status=\"200\"} 1"));
+        assert!(text.contains("yindle_auth_failures_total{reason=\"invalid_credentials\"} 1"));
+        assert!(text.contains("yindle_active_clients 0"));
+        assert!(text.contains("yindle_filter_cost_current 0"));
+        assert!(text.contains("yindle_filter_limit 300"));
+        assert!(text.contains("yindle_pages_printed_total{printer=\"laser1\"} 3"));
+        assert!(text.contains("yindle_http_requests_total{method=\"GET\",status=\"200\"} 1"));
 
         // Healthz & readyz
         let hz = m.healthz_response();

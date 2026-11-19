@@ -1,10 +1,10 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: presswork
+Upstream-Name: yindle
 Upstream-Contact: vindeckyy <35399491+vindeckyy@users.noreply.github.com>
-Source: https://github.com/vindeckyy/presswork
+Source: https://github.com/vindeckyy/yindle
 
 Files: *
-Copyright: 2025-2026 vindeckyy and Presswork contributors
+Copyright: 2025-2026 vindeckyy and Yindle contributors
 License: Apache-2.0 or MIT
 
 Files: data/mime/mime.types data/mime/mime.convs

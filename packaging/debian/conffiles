@@ -1,4 +1,4 @@
 /etc/cups/cupsd.conf
 /etc/cups/cups-files.conf
 /etc/pam.d/cups
-/etc/logrotate.d/presswork
+/etc/logrotate.d/yindle

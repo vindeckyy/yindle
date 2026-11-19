@@ -76,7 +76,7 @@ fn gzip_dynamic_huffman_and_malformed_edge_cases() {
     for i in 0..300u32 {
         let _ = writeln!(
             rich,
-            "Presswork IPP job line {i:04}: alpha beta gamma delta epsilon zeta eta theta {i} {}",
+            "Yindle IPP job line {i:04}: alpha beta gamma delta epsilon zeta eta theta {i} {}",
             "X".repeat((i as usize % 37) + 1)
         );
     }
@@ -453,7 +453,7 @@ fn common_printer_attrs_markers_alerts_filters_and_ctx_helpers() {
         p.auth_info_required = vec!["username".into(), "password".into()];
         p.reasons = vec!["toner-low-warning".into()];
         p.geo_location = Some("geo:37.77,-122.42".into());
-        p.organization = Some("Presswork".into());
+        p.organization = Some("Yindle".into());
         p.organizational_unit = Some("Infra".into());
     }
 

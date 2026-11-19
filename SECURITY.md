@@ -1,6 +1,6 @@
 # Security Policy
 
-Presswork is a network-facing print spooler and IPP scheduler designed as a
+Yindle is a network-facing print spooler and IPP scheduler designed as a
 memory-safe replacement for CUPS (`cupsd`). We treat security vulnerabilities
 as top-priority engineering issues and follow Coordinated Vulnerability
 Disclosure (CVD).
@@ -15,7 +15,7 @@ security vulnerability.**
 Report vulnerabilities privately through **GitHub Private Vulnerability
 Reporting**:
 
-- **Primary channel:** <https://github.com/vindeckyy/presswork/security/advisories/new>
+- **Primary channel:** <https://github.com/vindeckyy/yindle/security/advisories/new>
 
 ### What to Include
 
@@ -69,7 +69,7 @@ Security fixes and advisories are provided for the following release lines:
 | `main` | Best-effort | Active development branch; fixes land here first before backport |
 | `< 0.1.0` | No | Pre-release snapshots; upgrade to the latest `0.1.x` release |
 
-Once Presswork reaches `1.0`, the support policy covers the latest minor release
+Once Yindle reaches `1.0`, the support policy covers the latest minor release
 plus one previous minor release (`N` and `N-1`).
 
 ---
@@ -81,7 +81,7 @@ architectural security controls:
 
 ### 1. Memory Safety & `unsafe` Confinement
 - The workspace enforces `#![forbid(unsafe_code)]` across every library crate
-  and binary except `crates/sys` (`presswork-sys`), which isolates audited POSIX
+  and binary except `crates/sys` (`yindle-sys`), which isolates audited POSIX
   FFI wrappers (reentrant `getpwnam_r`/`getgrnam_r`/`getspnam_r`, `SO_PEERCRED`,
   privilege drop, `rlimit`, `O_NOFOLLOW`, `sd_listen_fds`).
 - CI enforces this boundary on every pull request (`forbid-unsafe` job).
@@ -118,33 +118,33 @@ architectural security controls:
   with restricted permissions (`0600` / `ConfigFilePerm`, `O_NOFOLLOW`).
 
 ### 5. Cryptographic Modules & FIPS 140-3 Note (`aws-lc-sys` / `ring`)
-- Presswork's TLS stack (`rustls` 0.23) uses **`aws-lc-rs` / `aws-lc-sys`** as
+- Yindle's TLS stack (`rustls` 0.23) uses **`aws-lc-rs` / `aws-lc-sys`** as
   its default cryptographic provider, which compiles native C and assembly
   cryptographic primitives derived from AWS-LC. Self-signed certificate
   generation (`rcgen`) additionally uses **`ring`** (native C/assembly).
-- **FIPS 140-3 notice:** Standard prebuilt Presswork releases and container
+- **FIPS 140-3 notice:** Standard prebuilt Yindle releases and container
   images compile `aws-lc-sys` in its default (non-FIPS) configuration and are
   **not** FIPS 140-3 certified out of the box. Deployments subject to FIPS 140-3
   mandates must either:
-  1. Rebuild Presswork from source enabling the `aws-lc-rs` FIPS module in a
+  1. Rebuild Yindle from source enabling the `aws-lc-rs` FIPS module in a
      conforming build environment (with CMake/Clang/Go per AWS-LC-RS FIPS
      guidance), or
   2. Terminate external TLS at a FIPS 140-3 validated reverse proxy/load
-     balancer and bind Presswork exclusively to loopback / Unix sockets.
+     balancer and bind Yindle exclusively to loopback / Unix sockets.
 
 ---
 
 ## Supply Chain, SBOM & Provenance Verification
 
-Every tagged Presswork release publishes:
+Every tagged Yindle release publishes:
 
 - **`SHA256SUMS`** — SHA-256 digests for all tarballs, `.deb` packages, and SBOMs.
-- **CycloneDX SBOM (`presswork-<version>.cdx.json`)** — machine-readable
+- **CycloneDX SBOM (`yindle-<version>.cdx.json`)** — machine-readable
   dependency and license inventory covering the full workspace lockfile.
 - **GitHub Artifact Build Provenance & SBOM Attestations** — signed SLSA build
   provenance (`actions/attest-build-provenance`) and SBOM attestations
   (`actions/attest-sbom`) for release assets and multi-arch GHCR container
-  images (`ghcr.io/vindeckyy/presswork`).
+  images (`ghcr.io/vindeckyy/yindle`).
 
 ### Verifying Release Artifacts
 
@@ -155,13 +155,13 @@ Every tagged Presswork release publishes:
 2. Verify SLSA build provenance for a tarball or `.deb` package using the
    GitHub CLI (`gh` >= 2.49):
    ```sh
-   gh attestation verify presswork-0.1.0-x86_64-unknown-linux-gnu.tar.gz \
-     --repo vindeckyy/presswork
+   gh attestation verify yindle-0.1.1-x86_64-unknown-linux-gnu.tar.gz \
+     --repo vindeckyy/yindle
    ```
 3. Verify container image provenance and SBOM attestations:
    ```sh
-   gh attestation verify oci://ghcr.io/vindeckyy/presswork:0.1.0 \
-     --repo vindeckyy/presswork
+   gh attestation verify oci://ghcr.io/vindeckyy/yindle:0.1.1 \
+     --repo vindeckyy/yindle
    ```
 
 ### Continuous Security Controls

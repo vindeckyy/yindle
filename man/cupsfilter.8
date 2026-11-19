@@ -1,6 +1,6 @@
-.TH CUPSFILTER 8 "2026-11-18" "Presswork 0.1.0" "System Administration"
+.TH CUPSFILTER 8 "2026-11-18" "yindle 0.1.1" "System Administration"
 .SH NAME
-cupsfilter \- Presswork standalone CUPS MIME and PPD filter-chain converter
+cupsfilter \- Yindle standalone CUPS MIME and PPD filter-chain converter
 .SH SYNOPSIS
 .B cupsfilter
 .RB [ \-\-list\-filters ]
@@ -45,7 +45,7 @@ PPD
 .B *cupsFilter
 /
 .B *cupsFilter2
-rules, and least-cost Dijkstra filter graph used by Presswork
+rules, and least-cost Dijkstra filter graph used by Yindle
 .BR cupsd (8).
 Converted output is written to standard output, while filter diagnostics appear
 on standard error.
@@ -166,7 +166,7 @@ Set the username passed as
 Show usage summary and exit with status 0.
 .TP
 .BR \-V ", " \-\-version
-Show Presswork version information and exit with status 0.
+Show Yindle version information and exit with status 0.
 .SH ENVIRONMENT
 .TP
 .B CUPS_SERVERROOT

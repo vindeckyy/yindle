@@ -18,7 +18,7 @@ const CRYPT_DATA_WORDS: usize = 32_768;
 
 /// Valid SHA-512 crypt setting used to equalize timing when a user is unknown,
 /// locked, expired, or `/etc/shadow` cannot be read.
-const DUMMY_SHADOW_HASH: &CStr = c"$6$pressworkdummy01$5nQ8xK2vR9mL4pW7jT1yC6bH3fD0sA8eG2kN5uV9wX1zM4qP7rS0tB3vY6nJ8cL2mK5pQ8rT1wX4yZ7aB0cD1eF/";
+const DUMMY_SHADOW_HASH: &CStr = c"$6$yindledummy00001$5nQ8xK2vR9mL4pW7jT1yC6bH3fD0sA8eG2kN5uV9wX1zM4qP7rS0tB3vY6nJ8cL2mK5pQ8rT1wX4yZ7aB0cD1eF/";
 
 /// Function signature of `crypt_r(3)`.
 type CryptRFn = unsafe extern "C" fn(

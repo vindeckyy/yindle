@@ -1,6 +1,6 @@
-# Contributing to Presswork
+# Contributing to Yindle
 
-Thank you for your interest in contributing to Presswork! Presswork is an
+Thank you for your interest in contributing to Yindle! Yindle is an
 independent, memory-safe Rust implementation of the CUPS 2.x print spooler and
 IPP scheduler (`cupsd`).
 
@@ -66,7 +66,7 @@ cargo test --workspace --locked
 
 ### 2. Per-Crate Test Coverage Gate (`>= 95%` Lines)
 
-Presswork enforces **at least 95% line coverage on every workspace crate
+Yindle enforces **at least 95% line coverage on every workspace crate
 individually** (not just a workspace average):
 
 ```sh
@@ -95,7 +95,7 @@ cargo audit
 
 ### 4. Running a Local Unprivileged Dev Server
 
-You can run Presswork locally without `root` privileges and without conflicting
+You can run Yindle locally without `root` privileges and without conflicting
 with a host CUPS installation by using an isolated scratch root on a high port
 (e.g., `127.0.0.1:8631`):
 
@@ -154,12 +154,12 @@ with a host CUPS installation by using an isolated scratch root on a high port
 
 ## Developer Certificate of Origin (DCO) & Licensing
 
-By contributing to Presswork, you certify that your contribution complies with
+By contributing to Yindle, you certify that your contribution complies with
 the [Developer Certificate of Origin v1.1](https://developercertificate.org/)
 (indicated via `Signed-off-by:` in each commit message).
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in Presswork by you, as defined in the Apache-2.0 license, shall
+for inclusion in Yindle by you, as defined in the Apache-2.0 license, shall
 be dual-licensed under **`Apache-2.0 OR MIT`** (see [`LICENSE-APACHE`](LICENSE-APACHE),
 [`LICENSE-MIT`](LICENSE-MIT), and [`NOTICE`](NOTICE)), without any additional
 terms or conditions.
