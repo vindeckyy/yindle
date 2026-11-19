@@ -21,6 +21,30 @@ pub struct LocalInterface {
     pub is_up: bool,
 }
 
+/// Copy a `sockaddr` payload into a fresh, properly aligned `T`.
+///
+/// `sa` arrives as a `*const sockaddr` (alignment 2), which may be less
+/// aligned than `sockaddr_in`/`sockaddr_in6` (alignment 4); casting the
+/// pointer and dereferencing it would be UB on an under-aligned address.
+/// Copying the bytes into a stack-allocated `T` is always safe instead.
+/// Callers must guarantee `sa` points to at least `size_of::<T>()`
+/// readable bytes of a valid `T` payload (checked via `sa_family` first).
+///
+/// SAFETY: `sa` must be non-null and point to a valid `T` value.
+unsafe fn read_sockaddr<T>(sa: *const libc::sockaddr) -> T {
+    let mut out = std::mem::MaybeUninit::<T>::uninit();
+    // SAFETY: `sa` is valid for `size_of::<T>()` bytes per the caller, and
+    // the copy targets only `u8` pointers, so no alignment is assumed.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            sa.cast::<u8>(),
+            out.as_mut_ptr().cast::<u8>(),
+            std::mem::size_of::<T>(),
+        );
+        out.assume_init()
+    }
+}
+
 /// Convert a `sockaddr` pointer (`AF_INET` or `AF_INET6`) to `IpAddr`.
 unsafe fn sockaddr_to_ip(sa: *const libc::sockaddr) -> Option<IpAddr> {
     if sa.is_null() {
@@ -30,13 +54,13 @@ unsafe fn sockaddr_to_ip(sa: *const libc::sockaddr) -> Option<IpAddr> {
     let family = i32::from(unsafe { (*sa).sa_family });
     if family == libc::AF_INET {
         // SAFETY: `AF_INET` guarantees `sa` points to a valid `sockaddr_in`.
-        let sin = unsafe { &*(sa.cast::<libc::sockaddr_in>()) };
+        let sin = unsafe { read_sockaddr::<libc::sockaddr_in>(sa) };
         Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(
             sin.sin_addr.s_addr,
         ))))
     } else if family == libc::AF_INET6 {
         // SAFETY: `AF_INET6` guarantees `sa` points to a valid `sockaddr_in6`.
-        let sin6 = unsafe { &*(sa.cast::<libc::sockaddr_in6>()) };
+        let sin6 = unsafe { read_sockaddr::<libc::sockaddr_in6>(sa) };
         Some(IpAddr::V6(Ipv6Addr::from(sin6.sin6_addr.s6_addr)))
     } else {
         None

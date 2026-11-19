@@ -340,13 +340,13 @@ impl EventNotifier {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         while state.version == seen_version {
             let rem = deadline.checked_duration_since(Instant::now())?;
-            let (guard, res) = self
+            let (guard, waited) = self
                 .inner
                 .1
                 .wait_timeout(state, rem)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state = guard;
-            if res.timed_out() && state.version == seen_version {
+            if waited.timed_out() && state.version == seen_version {
                 return None;
             }
         }

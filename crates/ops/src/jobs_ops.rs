@@ -508,9 +508,9 @@ fn resolve_and_authorize_dest(
         return None;
     };
     let printer = {
-        let reg = ctx.reg();
-        let Some((p, _)) = reg.validate_dest(&uri) else {
-            drop(reg);
+        let registry = ctx.reg();
+        let Some((p, _)) = registry.validate_dest(&uri) else {
+            drop(registry);
             let policy = ctx.effective_policy_for_dest(None);
             if !authorize_op(ctx, outcome, &policy, op_code, None, Some(&uri)) {
                 return None;
@@ -656,14 +656,14 @@ pub fn get_jobs(
         }
         None
     } else {
-        let reg = ctx.reg();
+        let registry = ctx.reg();
         let resolved = if let Some(ref jdest) = only_job_dest {
-            reg.find(jdest)
+            registry.find(jdest)
         } else {
-            reg.validate_dest(&uri).map(|(p, _)| p)
+            registry.validate_dest(&uri).map(|(p, _)| p)
         };
         let Some(p) = resolved else {
-            drop(reg);
+            drop(registry);
             let policy = ctx.effective_policy_for_dest(None);
             if !authorize_op(ctx, outcome, &policy, op::GET_JOBS, None, Some(&uri)) {
                 return;
@@ -677,7 +677,7 @@ pub fn get_jobs(
         };
         let pname = p.name.clone();
         let policy = ctx.effective_policy_name(Some(p)).to_string();
-        drop(reg);
+        drop(registry);
         if !authorize_op(ctx, outcome, &policy, op::GET_JOBS, None, Some(&pname)) {
             return;
         }
@@ -739,8 +739,9 @@ pub fn get_jobs(
         Vec::new()
     } else {
         let target = p_name.as_deref().unwrap_or("");
-        let reg = ctx.reg();
-        reg.find(target)
+        let registry = ctx.reg();
+        registry
+            .find(target)
             .filter(|p| p.is_class())
             .map(|p| p.members.clone())
             .unwrap_or_default()
@@ -1445,9 +1446,9 @@ pub fn cancel_job(
             return;
         };
         let dest = {
-            let reg = ctx.reg();
-            let Some((p, _)) = reg.validate_dest(&uri) else {
-                drop(reg);
+            let registry = ctx.reg();
+            let Some((p, _)) = registry.validate_dest(&uri) else {
+                drop(registry);
                 let policy = ctx.effective_policy_for_dest(None);
                 if !authorize_op(ctx, outcome, &policy, op::CANCEL_JOB, None, Some(&uri)) {
                     return;
@@ -1583,9 +1584,9 @@ fn transition_current_job(
         return;
     };
     let dest = {
-        let reg = ctx.reg();
-        let Some((p, _)) = reg.validate_dest(&uri) else {
-            drop(reg);
+        let registry = ctx.reg();
+        let Some((p, _)) = registry.validate_dest(&uri) else {
+            drop(registry);
             let policy = ctx.effective_policy_for_dest(None);
             if !authorize_op(ctx, outcome, &policy, op_code, None, Some(&uri)) {
                 return;
@@ -1710,9 +1711,9 @@ pub fn cancel_my_jobs(
         if is_all_printers_uri(uri) {
             None
         } else {
-            let reg = ctx.reg();
-            let Some((p, _)) = reg.validate_dest(uri) else {
-                drop(reg);
+            let registry = ctx.reg();
+            let Some((p, _)) = registry.validate_dest(uri) else {
+                drop(registry);
                 let policy = ctx.effective_policy_for_dest(None);
                 if !authorize_op(
                     ctx,
@@ -1819,9 +1820,9 @@ pub fn cancel_jobs(
     let dest = if all {
         None
     } else {
-        let reg = ctx.reg();
-        let Some((p, _)) = reg.validate_dest(&uri) else {
-            drop(reg);
+        let registry = ctx.reg();
+        let Some((p, _)) = registry.validate_dest(&uri) else {
+            drop(registry);
             let policy = ctx.effective_policy_for_dest(None);
             if !authorize_op(ctx, outcome, &policy, op::CANCEL_JOBS, None, Some(&uri)) {
                 return;
@@ -1905,9 +1906,9 @@ pub fn purge_jobs(
         if is_all_printers_uri(&uri) {
             None
         } else {
-            let reg = ctx.reg();
-            let Some((p, _)) = reg.validate_dest(&uri) else {
-                drop(reg);
+            let registry = ctx.reg();
+            let Some((p, _)) = registry.validate_dest(&uri) else {
+                drop(registry);
                 let policy = ctx.effective_policy_for_dest(None);
                 if !authorize_op(ctx, outcome, &policy, op::PURGE_JOBS, None, Some(&uri)) {
                     return;
@@ -2838,8 +2839,8 @@ fn resolve_move_target(
         return None;
     };
     let target_printer = {
-        let reg = ctx.reg();
-        let Some((p, _)) = reg.validate_dest(&target_uri) else {
+        let registry = ctx.reg();
+        let Some((p, _)) = registry.validate_dest(&target_uri) else {
             send_status(
                 &mut outcome.response,
                 status::ERROR_NOT_FOUND,
@@ -2947,9 +2948,9 @@ pub fn cups_move_job(
         return;
     };
     let src_dest = {
-        let reg = ctx.reg();
-        let Some((p, _)) = reg.validate_dest(&src_uri) else {
-            drop(reg);
+        let registry = ctx.reg();
+        let Some((p, _)) = registry.validate_dest(&src_uri) else {
+            drop(registry);
             let policy = ctx.effective_policy_for_dest(None);
             if !authorize_op(
                 ctx,

@@ -795,11 +795,11 @@ pub fn get_notifications_sync(req: &IppMessage, outcome: &mut DispatchOutcome, c
             emit_notifications_response(&mut outcome.response, ctx, notes);
             return;
         }
-        let Some(rem) = deadline.checked_duration_since(Instant::now()) else {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             emit_notifications_response(&mut outcome.response, ctx, Vec::new());
             return;
         };
-        if notifier.wait_timeout(ver, rem).is_none() {
+        if notifier.wait_timeout(ver, remaining).is_none() {
             let (final_notes, _, _) = collect_notifications(ctx, &parsed.pairs);
             emit_notifications_response(&mut outcome.response, ctx, final_notes);
             return;
@@ -826,11 +826,14 @@ pub async fn get_notifications_async(
             emit_notifications_response(&mut outcome.response, ctx, notes);
             return;
         }
-        let Some(rem) = deadline.checked_duration_since(Instant::now()) else {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             emit_notifications_response(&mut outcome.response, ctx, Vec::new());
             return;
         };
-        if wait_notifier_async(&notifier, ver, rem).await.is_none() {
+        if wait_notifier_async(&notifier, ver, remaining)
+            .await
+            .is_none()
+        {
             let (final_notes, _, _) = collect_notifications(ctx, &parsed.pairs);
             emit_notifications_response(&mut outcome.response, ctx, final_notes);
             return;

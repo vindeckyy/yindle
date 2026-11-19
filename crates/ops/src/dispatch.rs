@@ -302,9 +302,9 @@ fn resolve_printer_for_read(
         return None;
     };
     let printer = {
-        let reg = ctx.reg();
-        let Some((p, _)) = reg.validate_dest(&uri) else {
-            drop(reg);
+        let registry = ctx.reg();
+        let Some((p, _)) = registry.validate_dest(&uri) else {
+            drop(registry);
             let policy = ctx.effective_policy_for_dest(None);
             if !authorize_op(ctx, outcome, &policy, op_code, None, Some(&uri)) {
                 return None;
@@ -431,8 +431,8 @@ fn get_printers(req: &IppMessage, outcome: &mut DispatchOutcome, ctx: &Ctx<'_>, 
     let ra = requested_attrs(req);
 
     let matching: Vec<Printer> = {
-        let reg = ctx.reg();
-        if reg.printers.is_empty() {
+        let registry = ctx.reg();
+        if registry.printers.is_empty() {
             send_status(
                 &mut outcome.response,
                 status::ERROR_NOT_FOUND,
@@ -440,7 +440,7 @@ fn get_printers(req: &IppMessage, outcome: &mut DispatchOutcome, ctx: &Ctx<'_>, 
             );
             return;
         }
-        let mut iter: Vec<&Printer> = reg.printers.values().collect();
+        let mut iter: Vec<&Printer> = registry.printers.values().collect();
         if let Some(first_name) = first {
             if let Some(pos) = iter.iter().position(|p| p.name == first_name) {
                 iter = iter.split_off(pos);
@@ -465,7 +465,7 @@ fn get_printers(req: &IppMessage, outcome: &mut DispatchOutcome, ctx: &Ctx<'_>, 
             if want_class == 0 && p.is_class() {
                 continue;
             }
-            if i64::from(p.effective_ptype(reg.default.as_deref() == Some(p.name.as_str())))
+            if i64::from(p.effective_ptype(registry.default.as_deref() == Some(p.name.as_str())))
                 & pt_mask
                 != pt_filter
             {

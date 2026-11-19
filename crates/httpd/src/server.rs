@@ -856,9 +856,9 @@ pub async fn read_body<S: AsyncRead + AsyncWrite + Unpin>(
         spool_threshold: None,
         ..ServerConfig::default()
     };
-    let res = read_body_with_config(s, &mut rbuf, req, &cfg).await;
+    let result = read_body_with_config(s, &mut rbuf, req, &cfg).await;
     *buf = rbuf.into_remaining();
-    res
+    result
 }
 
 async fn read_body_with_config<S: AsyncRead + AsyncWrite + Unpin>(
@@ -892,7 +892,7 @@ async fn read_body_with_config<S: AsyncRead + AsyncWrite + Unpin>(
     let deadline = Instant::now() + cfg.body_timeout;
     let mut sink = BodySink::new(cfg.spool_threshold, cfg.spool_dir.clone());
 
-    let res = match framing {
+    let result = match framing {
         BodyFraming::None => unreachable!(),
         BodyFraming::ContentLength(len) => {
             read_exact_to_sink(s, buf, len, deadline, &mut sink).await
@@ -901,7 +901,7 @@ async fn read_body_with_config<S: AsyncRead + AsyncWrite + Unpin>(
         BodyFraming::UntilEof => read_to_eof_to_sink(s, buf, limit, deadline, &mut sink).await,
     };
 
-    if let Err(err) = res {
+    if let Err(err) = result {
         sink.cleanup();
         return Err(err);
     }
