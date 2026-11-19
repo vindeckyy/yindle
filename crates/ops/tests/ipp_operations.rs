@@ -1051,7 +1051,9 @@ fn admin_printers_classes_hold_new_jobs_and_common_attr_uniqueness() {
 
     // Inspect Get-Printer-Attributes for:
     //  a) ZERO duplicate attribute names!
-    //  b) NO fake https://localhost/supplies!
+    //  b) printer-supply attributes present (IPP Everywhere: one
+    //     explicitly-unknown entry when the queue reports no markers,
+    //     with a matching description and info URI)!
     //  c) IPP 2.2 in ipp-versions-supported!
     //  d) NO duplicate 600dpi in printer-resolution-supported!
     //  e) PPD capabilities honored (color-supported=true, A4 default, 1200dpi, custom MIME)!
@@ -1071,7 +1073,18 @@ fn admin_printers_classes_hold_new_jobs_and_common_attr_uniqueness() {
             "duplicate attribute emitted in Get-Printer-Attributes: {name}"
         );
     }
-    assert!(pg.find("printer-supply-info-uri").is_none());
+    assert!(pg.find("printer-supply-info-uri").is_some());
+    // No markers on this queue: exactly one explicitly-unknown supply
+    // entry, with a matching description.
+    let supply = pg.find("printer-supply").expect("printer-supply");
+    assert_eq!(supply.values.len(), 1);
+    assert_eq!(
+        pg.find("printer-supply-description")
+            .expect("printer-supply-description")
+            .values
+            .len(),
+        1
+    );
     let versions: Vec<String> = pg
         .find("ipp-versions-supported")
         .unwrap()

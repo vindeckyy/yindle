@@ -166,3 +166,14 @@ pub fn socket_family(fd: RawFd) -> i32 {
         -1
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sockaddr_to_ip_rejects_null() {
+        // SAFETY: null is the input under test; the function checks for it first.
+        assert!(unsafe { sockaddr_to_ip(ptr::null()) }.is_none());
+    }
+}

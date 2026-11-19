@@ -423,6 +423,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn pam_conversation_callback() {
         // Directly test PAM conversation callback across all message styles.
         let user = CString::new("alice").unwrap();
@@ -474,6 +475,39 @@ mod tests {
             assert!((*resp_ptr.add(2)).resp.is_null());
             assert!((*resp_ptr.add(3)).resp.is_null());
             pam::free_responses(resp_ptr, 4);
+        }
+
+        // An empty password yields an empty response, exercising the
+        // zero-length branch of `free_responses`.
+        let empty_pass = CString::new("").unwrap();
+        let mut empty_data = pam::ConvData::new(&user, &empty_pass);
+        let empty_msgs = [pam::PamMessage {
+            msg_style: pam::PAM_PROMPT_ECHO_OFF,
+            msg: c"Password:".as_ptr(),
+        }];
+        let mut empty_ptrs: Vec<*const pam::PamMessage> =
+            empty_msgs.iter().map(std::ptr::from_ref).collect();
+        let mut empty_resp: *mut pam::PamResponse = std::ptr::null_mut();
+        // SAFETY: `empty_ptrs`, `empty_resp`, and `empty_data` match the Linux-PAM callback contract.
+        let rc = unsafe {
+            pam::pam_conv_cb(
+                i32::try_from(empty_ptrs.len()).unwrap(),
+                empty_ptrs.as_mut_ptr(),
+                &raw mut empty_resp,
+                (&raw mut empty_data).cast::<libc::c_void>(),
+            )
+        };
+        assert_eq!(rc, 0);
+        assert!(!empty_resp.is_null());
+        // SAFETY: `empty_resp` has 1 empty response allocated by `pam_conv_cb`.
+        unsafe {
+            assert_eq!(
+                std::ffi::CStr::from_ptr((*empty_resp.add(0)).resp)
+                    .to_str()
+                    .unwrap(),
+                ""
+            );
+            pam::free_responses(empty_resp, 1);
         }
 
         // Error paths in callback: invalid count, null message, unknown style.
@@ -545,6 +579,10 @@ mod tests {
         std::env::set_var("LISTEN_FDS", "-3");
         assert!(sd_listen_fds().is_empty());
         assert!(std::env::var_os("LISTEN_FDS").is_none());
+
+        // No activation variables at all: both `remove_var` guards take
+        // their false path and the call returns empty.
+        assert!(sd_listen_fds().is_empty());
 
         // Test `adopt_listen_fds` on a fresh pipe descriptor without touching fd 3.
         let mut fds = [0i32; 2];
@@ -786,6 +824,8 @@ mod tests {
         assert!(open_readonly_nofollow(std::path::Path::new("bad\0path")).is_err());
         assert!(open_append_nofollow(&link, 0o600).is_err());
         assert!(open_append_nofollow(&dir, 0o600).is_err());
+        // `open_append_nofollow` rejects a non-regular file `open(2)` accepts.
+        assert!(open_append_nofollow(std::path::Path::new("/dev/null"), 0o600).is_err());
         assert!(atomic_write_secure(&dir, b"x", 0o600, false).is_err());
         assert!(atomic_write_secure(&dir.join("no-such-dir/file"), b"x", 0o600, false).is_err());
         assert!(atomic_write_secure(&dir.join("bad\0name"), b"x", 0o600, false).is_err());
@@ -810,6 +850,16 @@ mod tests {
         assert!(open_char_device_noctty(&target, false).is_err());
         assert!(open_char_device_noctty(std::path::Path::new("/nonexistent/dev"), false).is_err());
         assert!(atomic_write_secure(std::path::Path::new("/"), b"x", 0o600, false).is_err());
+
+        // A write-only parent dir defeats the post-rename directory fsync's
+        // `File::open(parent)` (EACCES without read permission); the write
+        // itself still succeeds. Only observable off-root (CI); as root the
+        // open succeeds and the line stays uncovered locally.
+        let wronly = dir.join("wronly");
+        std::fs::create_dir(&wronly).unwrap();
+        std::fs::set_permissions(&wronly, std::fs::Permissions::from_mode(0o333)).unwrap();
+        atomic_write_secure(&wronly.join("f"), b"x", 0o600, true).unwrap();
+        std::fs::set_permissions(&wronly, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -856,6 +906,8 @@ mod tests {
             assert!(!tio.is_dtrdsr());
             tio.set_flow("none");
             assert!(!tio.is_dtrdsr());
+            // `set()` with DTR/DSR flow off takes the false path of its guard.
+            assert!(tio.set(ptmx.as_raw_fd()));
             tio.set_flow("dtrdsr");
             assert!(tio.is_dtrdsr());
             assert!(tio.set(ptmx.as_raw_fd()));

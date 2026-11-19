@@ -781,6 +781,162 @@ mod tests {
     }
 
     #[test]
+    fn snmp_conf_duplicate_and_unparsable_values() {
+        // Duplicate community takes the dedup false path; unparsable levels fall through.
+        let cfg = parse_snmp_conf(
+            "Community public\nCommunity public\nCommunity private\nDebugLevel banana\nMaxRunTime banana\nBogusKey value\n",
+        );
+        assert_eq!(
+            cfg.communities,
+            vec!["public".to_string(), "private".to_string()]
+        );
+        assert_eq!(cfg.debug_level, 0);
+        assert_eq!(cfg.max_run_time, Duration::from_secs(3));
+        // No override and no server root resolves the default path.
+        let def = load_snmp_conf(None, None);
+        assert_ne!(def.addresses, Vec::<String>::new());
+        assert_ne!(def.communities, Vec::<String>::new());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn snmp_response_guards_and_info_extraction() {
+        // OID with fewer than two arcs takes the empty-payload path.
+        assert_eq!(encode_oid(&[]), encode_tlv(0x06, &[]));
+        assert_eq!(encode_oid(&[1]), encode_tlv(0x06, &[]));
+
+        // Wrap a PDU body into a full v1 message envelope.
+        let wrap = |pdu: &[u8]| {
+            let mut msg = Vec::new();
+            msg.extend_from_slice(&encode_int(0));
+            msg.extend_from_slice(&encode_tlv(0x04, b"public"));
+            msg.extend_from_slice(&encode_tlv(0xa2, pdu));
+            encode_tlv(0x30, &msg)
+        };
+        let seq_of = |items: &[Vec<u8>]| {
+            let mut body = Vec::new();
+            for it in items {
+                body.extend_from_slice(it);
+            }
+            encode_tlv(0x30, &body)
+        };
+        let pdu4 = |a: Vec<u8>, b: Vec<u8>, c: Vec<u8>, d: Vec<u8>| {
+            let mut p = Vec::new();
+            p.extend_from_slice(&a);
+            p.extend_from_slice(&b);
+            p.extend_from_slice(&c);
+            p.extend_from_slice(&d);
+            wrap(&p)
+        };
+
+        // Not a Sequence at the top level.
+        assert!(parse_snmp_response(&encode_int(0), None).is_none());
+        // Sequence with fewer than 3 items.
+        assert!(
+            parse_snmp_response(&seq_of(&[encode_int(0), encode_tlv(0x04, b"public")]), None)
+                .is_none()
+        );
+        // First item is not the version integer.
+        assert!(parse_snmp_response(
+            &seq_of(&[
+                encode_tlv(0x04, b"x"),
+                encode_tlv(0x04, b"public"),
+                encode_tlv(0xa2, &[]),
+            ]),
+            None
+        )
+        .is_none());
+        // Second item is not the community string.
+        assert!(parse_snmp_response(
+            &seq_of(&[encode_int(0), encode_int(0), encode_tlv(0xa2, &[])]),
+            None
+        )
+        .is_none());
+        // PDU with fewer than 4 items.
+        let mut pdu3 = Vec::new();
+        pdu3.extend_from_slice(&encode_int(7));
+        pdu3.extend_from_slice(&encode_int(0));
+        pdu3.extend_from_slice(&encode_int(0));
+        assert!(parse_snmp_response(&wrap(&pdu3), None).is_none());
+        // PDU request-id is not an integer.
+        assert!(parse_snmp_response(
+            &pdu4(
+                encode_tlv(0x04, b"x"),
+                encode_int(0),
+                encode_int(0),
+                seq_of(&[]),
+            ),
+            None
+        )
+        .is_none());
+        // PDU error-status is not an integer.
+        assert!(parse_snmp_response(
+            &pdu4(
+                encode_int(7),
+                encode_tlv(0x04, b"x"),
+                encode_int(0),
+                seq_of(&[]),
+            ),
+            None
+        )
+        .is_none());
+        // PDU varbind list is not a Sequence.
+        assert!(parse_snmp_response(
+            &pdu4(encode_int(7), encode_int(0), encode_int(0), encode_int(0)),
+            None
+        )
+        .is_none());
+        // No expected request id skips the id check entirely.
+        let pkt = build_get_response(b"public", 42, 0, &[(OID_SYS_DESCR, b"Acme")]);
+        let resp = parse_snmp_response(&pkt, None).expect("valid response");
+        assert_eq!(resp.request_id, 42);
+        assert_eq!(resp.varbinds.len(), 1);
+
+        // Malformed varbinds are skipped, not fatal.
+        let int_vb = pdu4(
+            encode_int(7),
+            encode_int(0),
+            encode_int(0),
+            seq_of(&[encode_int(5)]),
+        );
+        let resp = parse_snmp_response(&int_vb, None).unwrap();
+        assert_eq!(resp.varbinds.len(), 0);
+        let short_pair = pdu4(
+            encode_int(7),
+            encode_int(0),
+            encode_int(0),
+            seq_of(&[seq_of(&[encode_oid(OID_SYS_DESCR)])]),
+        );
+        let resp = parse_snmp_response(&short_pair, None).unwrap();
+        assert_eq!(resp.varbinds.len(), 0);
+        let non_oid_pair = pdu4(
+            encode_int(7),
+            encode_int(0),
+            encode_int(0),
+            seq_of(&[seq_of(&[encode_int(1), encode_tlv(0x04, b"x")])]),
+        );
+        let resp = parse_snmp_response(&non_oid_pair, None).unwrap();
+        assert_eq!(resp.varbinds.len(), 0);
+
+        // Extraction: empty descr skipped, hr descr wins, unknown OID ignored.
+        let pkt = build_get_response(
+            b"public",
+            1,
+            0,
+            &[
+                (OID_SYS_DESCR, b""),
+                (OID_HR_DEVICE_DESCR, b"HR Model 9"),
+                (&[1, 3, 6, 1, 2, 1, 99], b"mystery"),
+                (OID_SYS_DESCR, b"Acme 3000"),
+            ],
+        );
+        let resp = parse_snmp_response(&pkt, None).unwrap();
+        let (model, device_id) = extract_printer_info(&resp);
+        assert_eq!(model, "HR Model 9");
+        assert_eq!(device_id, "");
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)]
     fn format_uri_and_live_udp_discovery_with_port_probe() {
         let v4: IpAddr = "192.168.1.20".parse().unwrap();

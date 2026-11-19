@@ -110,10 +110,16 @@ fn check_sub_limits(
     owner: &str,
 ) -> bool {
     let subs = ctx.subs();
-    if ctx.max_subscriptions > 0 && subs.count() >= ctx.max_subscriptions as usize {
+    // Global cap counts *live* subscriptions only. Stock cupsd prunes
+    // expired subs (`cupsdExpireSubscriptions`) before every subscription
+    // op and in its main loop, so its raw array count is the live count.
+    // Counting lapsed leases here let one 5s-lease sub permanently consume
+    // a slot: 4.4's expiring sub blocked its own suite's next creation
+    // with client-error-too-many-subscriptions.
+    let live = subs.list(None, None);
+    if ctx.max_subscriptions > 0 && live.len() >= ctx.max_subscriptions as usize {
         return false;
     }
-    let live = subs.list(None, None);
     if ctx.max_subscriptions_per_user > 0 {
         let n = live
             .iter()

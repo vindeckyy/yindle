@@ -53,6 +53,10 @@ EOF
 Listen localhost:$PWPORT
 Listen $PWROOT/run/cups.sock
 DefaultShared yes
+# Same value as upstream's own harness (run-stp-tests.sh:494): the 4.4
+# suite expects the limit to trip on its last case, which only works if
+# the tier holds exactly 3 live subs at that point (see the purge before
+# 4.4 below).
 MaxSubscriptions 3
 <Policy default>
 <Limit All>
@@ -116,6 +120,25 @@ stop() {
     done
     rm -f "$PWROOT/run/cups.sock"
     sleep 1
+    # Wait for the old daemon to finish its graceful shutdown: on SIGTERM
+    # it flushes printers/subscriptions state to disk, so purging files
+    # (or recreating the root) before it exits lets the dying daemon
+    # resurrect them — notably subscriptions.conf, which a plain restart
+    # would otherwise reload and trip 4.4's MaxSubscriptions check.
+    for _ in $(seq 1 20); do
+        alive=0
+        for pid in /proc/[0-9]*/cwd; do
+            pid="${pid%/cwd}"
+            pid="${pid#/proc/}"
+            case "$(readlink "/proc/$pid/exe" 2>/dev/null)" in
+                *cupsd*)
+                    [ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" = "$PWROOT" ] && alive=1
+                    ;;
+            esac
+        done
+        [ "$alive" -eq 0 ] && break
+        sleep 0.5
+    done
 }
 
 restart() {
@@ -124,6 +147,12 @@ restart() {
     # them, but leftover `pending-held` seeds from a previous/interrupted run
     # absorb `cancel-current-job` and leak into ipp-1.1's completion polling.
     rm -f "$PWROOT/spool"/c[0-9]* "$PWROOT/spool"/d[0-9]*
+    # Purge persisted subscriptions too: subscriptions.conf survives a
+    # restart by design (stock CUPS behavior), so a plain restart does NOT
+    # give the functional tier the fresh table it assumes — the examples
+    # matrix's create-printer-subscription leaves live 24h-lease subs that
+    # inflate the global count and trip 4.4's MaxSubscriptions 3 check.
+    rm -f "$PWROOT/etc/subscriptions.conf"
     cargo build --bin cupsd
     cp target/debug/cupsd "$PWROOT/cupsd"
     ( cd "$PWROOT" && setsid ./cupsd -c etc/cupsd.conf -f > logs/stdout.log 2>&1 </dev/null & )
@@ -131,9 +160,43 @@ restart() {
     echo "daemon restarted on :$PWPORT"
 }
 
+# Patch the known upstream test-file bug in the pinned CUPS corpus:
+# in v2.4.11 the case named requested-attributes='media-col-database'
+# sends 'all' instead (examples/get-printer-attributes-suite.test:350),
+# and 'all' must NOT return media-col-database (RFC 8011), so the
+# EXPECT can never pass. Fixed on CUPS master by 9150d9d9 (2026-11-17,
+# "Update Get-Printer-Attributes test suite to try
+# media-col-database,all combo"), which sends 'media-col-database'
+# in that case — but no CUPS release contains the fix yet (latest is
+# v2.4.20), so rewrite that one ATTR here. Idempotent, and a no-op
+# once a fixed release is pinned. Only touches the pinned corpus
+# checkout, never the repo.
+patch_upstream_corpus() {
+    local f="$IPPTESTS/get-printer-attributes-suite.test"
+    [ -f "$f" ] || return 0
+    python3 - "$f" <<'PYEOF'
+import sys
+path = sys.argv[1]
+lines = open(path).read().splitlines(keepends=True)
+out, in_case, patched = [], False, False
+for line in lines:
+    if "NAME \"Get-Printer-Attributes (requested-attributes='media-col-database')\"" in line:
+        in_case = True
+    elif in_case and line.strip() == "}":
+        in_case = False
+    if in_case and not patched and line.strip() == "ATTR keyword requested-attributes 'all'":
+        line = line.replace("'all'", "'media-col-database'")
+        patched = True
+    out.append(line)
+open(path, "w").write("".join(out))
+print(f"patched upstream get-printer-attributes-suite.test: {patched}", file=sys.stderr)
+PYEOF
+}
+
 run() {
     local uri="ipp://localhost:$PWPORT/printers/tlsq"
     local pass=0 fail=0 skip=0
+    patch_upstream_corpus
     local tests=(
         get-printer-attributes get-printer-attributes-suite
         get-printer-description-attributes get-job-template-attributes
@@ -161,7 +224,10 @@ run() {
     ATTR name requesting-user-name $user
     ATTR boolean my-jobs false
     ATTR boolean purge-jobs true
-    STATUS *
+    # NOTE: `STATUS *` is not valid ipptool syntax (parse error, purge
+    # silently never ran) — Cancel-Jobs returns successful-ok even with
+    # nothing to cancel.
+    STATUS successful-ok
 }
 EOF
     ipptool -tv -f /tmp/pw-conf-doc.txt "ipp://localhost:$PWPORT/printers" /tmp/pw-conf-purge.test >/dev/null 2>&1 || true
@@ -191,6 +257,16 @@ EOF
             echo "SKIP examples/get-devices (stock ipptool URI-strictness; wire format is upstream-exact)"
             skip=$((skip+1)); continue
         fi
+        # print-uri: DELIBERATE deviation, not a gap. The test fetches
+        # file://$filename; yindle's Print-URI/Send-URI deliberately
+        # forbids file:// document URIs (crates/ops/src/jobs_ops.rs,
+        # fetch_document_uri) — letting a remote client name an arbitrary
+        # local path would be a local-file read. Network document URIs
+        # (http/https/ipp/ipps/ftp) are fetched when configured.
+        if [ "$t" = "print-uri" ]; then
+            echo "SKIP examples/print-uri (deliberate: file:// document-uri forbidden; see jobs_ops.rs fetch_document_uri)"
+            skip=$((skip+1)); continue
+        fi
         rc=0; verdict "examples/$t" "$uri" "$IPPTESTS/$t.test" || rc=$?
         case $rc in
             0) pass=$((pass+1));;
@@ -205,10 +281,12 @@ EOF
     # %-encoded socket path in the URI host.
     if [ -d "$TESTDIR" ]; then
         # Fresh daemon for the functional tier: the examples matrix's
-        # create-printer-subscription leaves a live sub that would inflate
-        # the global table and trip 4.4's MaxSubscriptions check early —
-        # upstream's own harness runs the numbered tests on a daemon that
-        # never saw the example ops.
+        # create-printer-subscription leaves live subs behind, and the
+        # numbered tests add their own (4.2 subscribes, 4.3 creates a job
+        # subscription) — upstream's own harness runs the numbered tests
+        # on a daemon that never saw the example ops. restart() also
+        # purges the persisted subscriptions.conf so the tier starts
+        # with an empty table.
         restart >/dev/null 2>&1
         # Seed one `pending-held` job for the functional tier only — 4.3's
         # `Get All Jobs` expects a `not-completed` job to still exist after
@@ -226,6 +304,18 @@ EOF
         local root_uri="ipp://localhost:$PWPORT/printers"
         for t in 4.1-requests 4.2-cups-printer-ops 4.3-job-ops 4.4-subscription-ops; do
             [ -f "$TESTDIR/$t.test" ] || { echo "SKIP test/$t"; skip=$((skip+1)); continue; }
+            if [ "$t" = "4.4-subscription-ops" ]; then
+                # Cancel 4.3's jobs first: its JPEG job's pipeline cannot
+                # start in the scratch env (no filter binaries), so the
+                # job sits `pending` with Test2 stopped and its job
+                # subscription never expires via completion — upstream's
+                # harness completes the job, which deletes the sub
+                # (`cupsdExpireSubscriptions(NULL, job)`). Canceling here
+                # restores the state 4.4 assumes: only 4.2's printer
+                # subscription is live, so 4.4's two 5s-lease subs fit
+                # under MaxSubscriptions 3 and the final case trips it.
+                ipptool -tv -f /tmp/pw-conf-doc.txt "ipp://localhost:$PWPORT/printers" /tmp/pw-conf-purge.test >/dev/null 2>&1 || true
+            fi
             rc=0; verdict "test/$t" "$root_uri" "$TESTDIR/$t.test" || rc=$?
             case $rc in
                 0) pass=$((pass+1));;
