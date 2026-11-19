@@ -110,10 +110,16 @@ fn check_sub_limits(
     owner: &str,
 ) -> bool {
     let subs = ctx.subs();
-    if ctx.max_subscriptions > 0 && subs.count() >= ctx.max_subscriptions as usize {
+    // Global cap counts *live* subscriptions only. Stock cupsd prunes
+    // expired subs (`cupsdExpireSubscriptions`) before every subscription
+    // op and in its main loop, so its raw array count is the live count.
+    // Counting lapsed leases here let one 5s-lease sub permanently consume
+    // a slot: 4.4's expiring sub blocked its own suite's next creation
+    // with client-error-too-many-subscriptions.
+    let live = subs.list(None, None);
+    if ctx.max_subscriptions > 0 && live.len() >= ctx.max_subscriptions as usize {
         return false;
     }
-    let live = subs.list(None, None);
     if ctx.max_subscriptions_per_user > 0 {
         let n = live
             .iter()
@@ -795,11 +801,11 @@ pub fn get_notifications_sync(req: &IppMessage, outcome: &mut DispatchOutcome, c
             emit_notifications_response(&mut outcome.response, ctx, notes);
             return;
         }
-        let Some(rem) = deadline.checked_duration_since(Instant::now()) else {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             emit_notifications_response(&mut outcome.response, ctx, Vec::new());
             return;
         };
-        if notifier.wait_timeout(ver, rem).is_none() {
+        if notifier.wait_timeout(ver, remaining).is_none() {
             let (final_notes, _, _) = collect_notifications(ctx, &parsed.pairs);
             emit_notifications_response(&mut outcome.response, ctx, final_notes);
             return;
@@ -826,11 +832,14 @@ pub async fn get_notifications_async(
             emit_notifications_response(&mut outcome.response, ctx, notes);
             return;
         }
-        let Some(rem) = deadline.checked_duration_since(Instant::now()) else {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             emit_notifications_response(&mut outcome.response, ctx, Vec::new());
             return;
         };
-        if wait_notifier_async(&notifier, ver, rem).await.is_none() {
+        if wait_notifier_async(&notifier, ver, remaining)
+            .await
+            .is_none()
+        {
             let (final_notes, _, _) = collect_notifications(ctx, &parsed.pairs);
             emit_notifications_response(&mut outcome.response, ctx, final_notes);
             return;

@@ -627,12 +627,19 @@ fn stored_attrs(p: &Printer, ctx: &Ctx, ppd_caps: Option<&PpdCapabilities>) -> V
         tags::MIMETYPE,
         Value::MimeMediaType("application/octet-stream".into()),
     );
-    add1(
-        &mut v,
-        "device-uri",
-        tags::URI,
-        Value::Uri(p.device_uri.as_str().into()),
-    );
+    // An empty device-uri is not a URI: emitting `Value::Uri("")` fails
+    // response encoding (RFC 8011 §5.1.6) and turns the whole
+    // Get-Printer-Attributes into client-error-bad-request. A printer
+    // added without a device-uri (CUPS-Add-Modify-Printer validates it
+    // only when supplied) simply omits the attribute.
+    if !p.device_uri.is_empty() {
+        add1(
+            &mut v,
+            "device-uri",
+            tags::URI,
+            Value::Uri(p.device_uri.as_str().into()),
+        );
+    }
 
     let devid = p
         .options
@@ -909,6 +916,71 @@ fn stored_attrs(p: &Printer, ctx: &Ctx, ppd_caps: Option<&PpdCapabilities>) -> V
             Value::Text(p.marker_message.as_str().into()),
         );
     }
+
+    // printer-supply / printer-supply-description / printer-supply-info-uri
+    // (IPP Everywhere; the PWG supply octet-string format stock cupsd
+    // derives from marker-* and `ippeveprinter` always emits). One entry
+    // per marker when the queue reports markers; otherwise a single
+    // explicitly-unknown entry (level -2, type unknown) so clients can
+    // tell supply state is unknown rather than absent. The info URI
+    // mirrors ippeveprinter's `/supplies` path on this server.
+    let supply_names: Vec<String> = if p.marker_names.is_empty() {
+        vec!["Unknown Supply".to_string()]
+    } else {
+        p.marker_names.clone()
+    };
+    let supplies: Vec<Value> = supply_names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let supply_type = p
+                .marker_types
+                .get(i)
+                .map_or("unknown", String::as_str);
+            let class = if supply_type.starts_with("waste") {
+                "receptacleThatIsFilled"
+            } else {
+                "supplyThatIsConsumed"
+            };
+            let level = p.marker_levels.get(i).copied().unwrap_or(-2);
+            let colorant = p
+                .marker_colors
+                .get(i)
+                .map_or_else(
+                    || {
+                        if p.marker_names.is_empty() {
+                            "unknown"
+                        } else {
+                            name.as_str()
+                        }
+                    },
+                    String::as_str,
+                );
+            Value::OctetString(
+                format!(
+                    "index={};class={class};type={supply_type};unit=percent;maxcapacity=100;level={level};colorantname={colorant};",
+                    i + 1
+                )
+                .into_bytes(),
+            )
+        })
+        .collect();
+    addn(&mut v, "printer-supply", tags::STRING, supplies);
+    addn(
+        &mut v,
+        "printer-supply-description",
+        tags::TEXT,
+        supply_names
+            .iter()
+            .map(|s| Value::Text(s.as_str().into()))
+            .collect(),
+    );
+    add1(
+        &mut v,
+        "printer-supply-info-uri",
+        tags::URI,
+        Value::Uri(web_uri(ctx, "/supplies").into()),
+    );
     v
 }
 

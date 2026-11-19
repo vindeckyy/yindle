@@ -547,8 +547,17 @@ UnknownFilesDir foo
     assert_eq!(cfg.pass_env, vec!["TZ"]);
     assert_eq!(cfg.set_env, vec![("MY_VAR".into(), "hello".into())]);
     // Explicit SystemGroup replaced the default list!
-    assert_eq!(cfg.system_group_names, vec!["my admin", "sec grp"]);
+    // An unresolvable name is kept (with a warning), not dropped: runtime
+    // `@SYSTEM` checks match by group name, and the validating host may
+    // simply lack the group (e.g. `lpadmin` before CUPS is installed).
+    assert_eq!(
+        cfg.system_group_names,
+        vec!["my admin", "sec grp", "missinggrp"]
+    );
     assert_eq!(cfg.system_groups, vec![51, 52]);
+    assert!(diags.entries.iter().any(|d| d.severity == Severity::Warn
+        && d.message.contains("Unknown SystemGroup")
+        && d.message.contains("missinggrp")));
     assert_eq!(cfg.oauth_groups.len(), 2);
     assert!(cfg.strip_user_domain);
     assert!(cfg.sync_on_close);

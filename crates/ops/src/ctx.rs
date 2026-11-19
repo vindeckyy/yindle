@@ -397,8 +397,15 @@ impl Ctx<'_> {
     }
 
     /// Notify the daemon that job `job_id` was canceled/purged so active
-    /// filter/backend PIDs can be terminated.
+    /// filter/backend PIDs can be terminated. Also drops the job's
+    /// subscriptions: stock cupsd deletes them when the job leaves the
+    /// active list (`cupsdExpireSubscriptions(NULL, job)`), and the
+    /// scheduler does this for backend-driven terminal states — but an
+    /// ops-layer cancel terminalizes the job without touching its subs,
+    /// so a canceled job's subscriptions leaked forever and kept consuming
+    /// `MaxSubscriptions` slots (4.3's job sub survived into 4.4).
     pub fn notify_cancel_job(&self, job_id: i32) {
+        self.subs_write().expire_job(job_id);
         if let (Some(hook), Ok(id)) = (&self.on_cancel_job, u32::try_from(job_id)) {
             hook(id);
         }

@@ -14,7 +14,6 @@ source tree). Each `.test` file is run with
 | `create-job`, `create-job-format`, `create-job-sheets`, `create-job-timeout` | Create-Job + Send-Document |
 | `fax-job` | |
 | `get-completed-jobs` | `which-jobs=completed` |
-| `get-devices` | `cups-deviced` under `ServerBin/daemon/` |
 | `get-jobs` | `which-jobs`, `limit`, `my-jobs`, `requesting-user-name` |
 | `get-job-template-attributes` | job-template group incl. `media-col-database` on explicit request |
 | `get-printer-attributes-suite` | **6/6** - `requested-attributes` group semantics: absent, `all`, `all`+`media-col-database`, `media-col-database`, `printer-description`, `job-template` |
@@ -23,7 +22,6 @@ source tree). Each `.test` file is run with
 | `identify-printer`, `identify-printer-display`, `identify-printer-multiple` | |
 | `ipp-backend` | |
 | `print-job`, `print-job-and-wait`, `print-job-deflate`, `print-job-gzip`, `print-job-hold`, `print-job-letter`, `print-job-manual`, `print-job-media-col`, `print-job-password` | end-to-end through filter→backend; `file` backend writes the document |
-| `print-uri` | non-`file://` network `document-uri` via configured fetcher (`file://` rejected fail-closed; see [`docs/deviations.md`](deviations.md)) |
 | `validate-job` | |
 | `create-printer-subscription` | pull (ippget) variant; push variant skips (no `-d recipient`) |
 | `get-ppd`, `get-ppd-printer` | `cups-driverd cat` streams the PPD body; `printer-uri` resolves the driverless `everywhere` PPD |
@@ -42,17 +40,24 @@ conformance.sh --restart rebuild cupsd + fresh daemon
 conformance.sh bootstrap + run
 ```
 
-Current result: **34 passed / 0 failed / 1 skipped** - the examples
+Current result: **33 passed / 0 failed / 2 skipped** - the examples
 matrix plus the upstream functional tier
 (`test/4.1-requests`, `test/4.2-cups-printer-ops`, `test/4.3-job-ops`,
 `test/4.4-subscription-ops`), all green.
 
-The single skip is `examples/get-devices`: backends emit bare scheme
+The two skips are deliberate, not gaps:
+
+- `examples/get-devices`: backends emit bare scheme
 names (`socket`, `ipp`, …) as `device-uri` - byte-identical to upstream
 cupsd - but stock `ipptool` (libcups ≤ 2.4.x) runs `ippValidateAttribute`
 on every response attribute and rejects a URI with no scheme+colon.
 Upstream's own `ipptool` would flag the same response. Real `lpinfo -v`
 (the actual client contract) parses it fine and lists all schemes.
+- `examples/print-uri`: yindle deliberately forbids `file://`
+document URIs in `fetch_document_uri()` (`crates/ops/src/jobs_ops.rs`),
+so the suite's `file://` case cannot run; see
+[`docs/deviations.md`](deviations.md). Non-`file://` network
+`document-uri` fetching works via the configured fetcher.
 
 `--run` first seeds one pending job (`Create-Job` with no `Send-Document`
 → `pending-held`/`job-data-insufficient`) so `cancel-current-job`'s
