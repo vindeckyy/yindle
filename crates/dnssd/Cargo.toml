@@ -10,4 +10,4 @@ workspace = true
 
 [dependencies]
 printer = { path = "../printer" }
-mdns-sd = "0.21.7"
+mdns-sd = "0.22.0"
